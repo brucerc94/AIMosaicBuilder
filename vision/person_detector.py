@@ -27,6 +27,29 @@ class OpenCVHOGPersonDetector(BasePersonDetector):
     def name(self) -> str:
         return "opencv_hog"
 
+    @staticmethod
+    def _create_hog(cv2):
+        """Create HOG across OpenCV Python builds that expose either API."""
+        factory = getattr(cv2, "HOGDescriptor_create", None)
+        if callable(factory):
+            return factory()
+        hog_cls = getattr(cv2, "HOGDescriptor", None)
+        if hog_cls is not None:
+            return hog_cls()
+        raise RuntimeError(
+            "This OpenCV build does not expose HOGDescriptor/HOGDescriptor_create. "
+            "Install a standard opencv-python build."
+        )
+
+    @staticmethod
+    def _default_people_detector(cv2):
+        detector_factory = getattr(cv2, "HOGDescriptor_getDefaultPeopleDetector", None)
+        if not callable(detector_factory):
+            raise RuntimeError(
+                "This OpenCV build does not expose the default people detector."
+            )
+        return detector_factory()
+
     def detect(self, image_path: str, analysis: Optional[ImageAnalysis] = None) -> list[PersonDetection]:
         try:
             import cv2
@@ -38,8 +61,8 @@ class OpenCVHOGPersonDetector(BasePersonDetector):
             raise RuntimeError(f"Cannot decode image: {image_path}")
         image_h, image_w = image.shape[:2]
 
-        hog = cv2.HOGDescriptor()
-        hog.setSVMDetector(cv2.HOGDescriptor_getDefaultPeopleDetector())
+        hog = self._create_hog(cv2)
+        hog.setSVMDetector(self._default_people_detector(cv2))
         rects, weights = hog.detectMultiScale(
             image,
             winStride=(8, 8),
@@ -87,12 +110,20 @@ def _position(cx: float, cy: float, width: int, height: int) -> str:
 def get_default_detector() -> BasePersonDetector:
     try:
         import cv2  # noqa: F401
-        return OpenCVHOGPersonDetector()
-    except ImportError:
+        detector = OpenCVHOGPersonDetector()
+        # Validate the required symbols now, so UI can report a useful error before a batch starts.
+        detector._create_hog(cv2)
+        detector._default_people_detector(cv2)
+        return detector
+    except (ImportError, RuntimeError):
         return UnavailablePersonDetector()
 
 
-def detect_persons(image_path: str, analysis: Optional[ImageAnalysis] = None, backend: Optional[BasePersonDetector] = None) -> list[PersonDetection]:
+def detect_persons(
+    image_path: str,
+    analysis: Optional[ImageAnalysis] = None,
+    backend: Optional[BasePersonDetector] = None,
+) -> list[PersonDetection]:
     detector = backend or get_default_detector()
     try:
         detections = detector.detect(image_path, analysis)
@@ -106,4 +137,7 @@ def detect_persons(image_path: str, analysis: Optional[ImageAnalysis] = None, ba
 def select_main_person(detections: list[PersonDetection]) -> Optional[PersonDetection]:
     if not detections:
         return None
-    return max(detections, key=lambda d: (d.confidence, d.relative_size, d.face_visible, d.body_visible, d.is_main))
+    return max(
+        detections,
+        key=lambda d: (d.confidence, d.relative_size, d.face_visible, d.body_visible, d.is_main),
+    )

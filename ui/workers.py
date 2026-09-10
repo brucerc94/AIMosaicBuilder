@@ -139,15 +139,12 @@ class PostProcessWorker(QRunnable):
                             record.error_message = "No real person bounding box detected."
                 self.signals.progress.emit(index, total, record.filename)
 
-            # Ranking is also independent from the canvas/layout.
             ranked = rank_records(
                 self._records,
                 self._settings.ranking_weights,
                 self._settings.mosaic_requirements,
             )
 
-            # Do not lock the results to a particular canvas during Analyze.
-            # Generate Mosaic will decide selection, N and zoom later.
             for record in ranked:
                 if record.status == ImageStatus.SELECTED:
                     record.status = ImageStatus.ANALYZED
@@ -177,6 +174,7 @@ class PostProcessWorker(QRunnable):
 class GenerateMosaicSignals(QObject):
     progress = Signal(str)
     finished = Signal(object, str, str, int, float, float)
+    cancelled = Signal()
     error = Signal(str)
 
 
@@ -196,6 +194,7 @@ class GenerateMosaicWorker(QRunnable):
     def run(self) -> None:
         try:
             if self._cancelled:
+                self.signals.cancelled.emit()
                 return
 
             source_folder = self._settings.last_source_folder
@@ -222,6 +221,7 @@ class GenerateMosaicWorker(QRunnable):
                 raise RuntimeError("No valid mosaic candidates are available. Run Analyze first.")
 
             if self._cancelled:
+                self.signals.cancelled.emit()
                 return
 
             target = int(self._settings.target_images)
@@ -256,6 +256,7 @@ class GenerateMosaicWorker(QRunnable):
                 mode = f"FIXED={target}"
 
             if self._cancelled:
+                self.signals.cancelled.emit()
                 return
             if not layout.placements:
                 details = ""

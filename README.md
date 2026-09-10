@@ -26,7 +26,9 @@ Detección de personas
         ↓
 Ranking
         ↓
-Eliminación de imágenes similares
+Aplicación de requisitos del usuario
+        ↓
+Diversidad / eliminación de similares
         ↓
 Selección de las mejores N
         ↓
@@ -35,7 +37,7 @@ Crop dinámico definido por coordenadas
 mosaic.json
 ```
 
-El objetivo no es simplemente encontrar todas las fotos que contienen una persona, sino seleccionar las fotografías más útiles para un mosaico: buena calidad, buena composición, buena visibilidad del sujeto y suficiente diversidad.
+El objetivo no es simplemente encontrar todas las fotos que contienen una persona, sino seleccionar las fotografías más útiles para un mosaico: buena calidad, buena composición, buena visibilidad del sujeto, variedad y cumplimiento de la receta solicitada por el usuario.
 
 ## Arquitectura
 
@@ -51,7 +53,7 @@ AI-Mosaic-Builder/
 │   ├── vision_llm.py       # Motor multimodal local
 │   ├── llama_features.py   # Detección de capacidades llama.cpp
 │   ├── image_analyzer.py   # Descubrimiento y pipeline de análisis
-│   ├── ranking.py          # Puntuación y selección
+│   ├── ranking.py          # Puntuación, requisitos y selección
 │   ├── cache.py            # Cache por SHA-256
 │   ├── models.py           # Dataclasses y modelos de datos
 │   ├── session.py          # Persistencia de sesiones
@@ -109,7 +111,116 @@ Cada fotografía puede producir un análisis estructurado con información como:
 - valor para el mosaico;
 - motivo de descarte.
 
+Además, el análisis multimodal clasifica atributos visuales usados por la receta del mosaico:
+
+```text
+framing:
+  face_only | head_shoulders | upper_body | half_body | full_body | unknown
+
+orientation:
+  front | three_quarter_front | side | three_quarter_back | back | unknown
+
+gender_presentation:
+  male | female | unknown
+
+content_rating:
+  safe | suggestive | explicit | unknown
+
+pose:
+  standing | seated | lying | walking | other | unknown
+
+looking_at_camera:
+  true | false
+```
+
+Cuando un atributo no puede determinarse de forma razonable se utiliza `unknown`.
+
 Los resultados se convierten en una estructura validable antes de continuar con las siguientes etapas.
+
+## Mosaic Requirements
+
+El usuario puede definir una receta para indicar cómo quiere que quede compuesto el mosaico.
+
+Los requisitos obligatorios se aplican durante la selección, no son solamente controles visuales de la interfaz.
+
+### Cantidades mínimas
+
+Se pueden pedir cantidades mínimas de:
+
+- `Face only`;
+- `Full body`;
+- `Front`;
+- `Side`;
+- `Back`;
+- `Male`;
+- `Female`;
+- `Face visible`;
+- `Body visible`.
+
+Ejemplo:
+
+```text
+Target Images: 12
+
+Face only:     1
+Full body:     2
+Back:          1
+Side:          1
+Female:        2
+Male:          2
+```
+
+El selector intenta reservar primero las plazas necesarias para satisfacer estos mínimos y luego completa las plazas restantes con las mejores fotografías disponibles.
+
+Una fotografía puede satisfacer varias categorías a la vez, pero solo ocupa una plaza del mosaico.
+
+### Contenido
+
+Existe una política de contenido:
+
+```text
+Don't care
+Safe only
+NSFW only
+```
+
+`Safe only` evita seleccionar imágenes clasificadas como `suggestive`, `explicit` o `unknown`.
+
+### Calidad mínima
+
+También pueden configurarse:
+
+- calidad mínima de la imagen;
+- visibilidad mínima de la persona;
+- excluir fotografías borrosas;
+- excluir fotografías muy ocluidas.
+
+### Preferencias suaves
+
+Además de los mínimos obligatorios existen preferencias que añaden un pequeño bonus al ranking:
+
+- preferir face-only;
+- preferir full-body;
+- preferir front;
+- preferir side;
+- preferir back;
+- preferir una sola persona;
+- preferir face visible;
+- preferir body visible.
+
+La diferencia es importante:
+
+```text
+REQUIRED
+→ debe intentar cumplirse
+
+PREFERRED
+→ mejora la selección, pero no bloquea el mosaico
+```
+
+### Requisitos imposibles
+
+Si una receta solicita, por ejemplo, 3 fotografías de espalda y solo existen 1 o 2 candidatas válidas, el selector no inventa fotografías. Registra el requisito no satisfecho en el log y utiliza las mejores candidatas restantes.
 
 ## Detección de personas
 
@@ -123,17 +234,21 @@ La aplicación utiliza un backend de detección desacoplado para que pueda susti
 
 Después del análisis se calcula un `final_score` entre 0 y 100 combinando diferentes factores de calidad.
 
-La selección final no depende solamente del ranking. También existe una etapa de diversidad para evitar seleccionar muchas fotografías prácticamente iguales.
-
-Conceptualmente:
+La selección final sigue este orden conceptual:
 
 ```text
 calidad
-  +
+  ↓
+requisitos obligatorios
+  ↓
+preferencias
+  ↓
 diversidad
-  =
-selección final
+  ↓
+mejores N
 ```
+
+La etapa de diversidad evita seleccionar muchas fotografías prácticamente iguales.
 
 El número de imágenes puede configurarse, por ejemplo:
 
@@ -173,9 +288,9 @@ Después se agregan 3 fotos:
 → 3 análisis nuevos
 ```
 
-Cambiar parámetros de selección, como `Target Images`, no obliga a repetir el análisis de las fotografías ya almacenadas en cache.
+Cambiar parámetros de selección, como `Target Images` o la receta del mosaico, no obliga a repetir el análisis de las fotografías ya almacenadas en cache.
 
-El cache también permite separar proyectos: cada carpeta tiene su propio cache.
+Cuando cambia el esquema del análisis, la versión de cache se incrementa para evitar reutilizar resultados antiguos que no contienen los nuevos atributos visuales.
 
 ## Sesiones
 
@@ -201,6 +316,7 @@ Entre ellos están:
 - threshold de detección;
 - parámetros de ranking;
 - modelo del detector de personas;
+- requisitos y preferencias del mosaico;
 - directorio de cache.
 
 ## Exportación
@@ -252,7 +368,7 @@ AI Mosaic Builder
         ↓
 analiza fotos
         ↓
-selecciona las mejores
+selecciona las mejores según la receta
         ↓
 genera mosaic.json
         ↓
@@ -293,12 +409,13 @@ python -m pip install -r requirements.txt
 2. Seleccionar `Source Folder`.
 3. Seleccionar el modelo GGUF multimodal.
 4. Seleccionar el `mmproj` correspondiente.
-5. Configurar `Target Images` y el resto de parámetros.
-6. Pulsar `Analyze`.
-7. Revisar las imágenes, scores y detecciones.
-8. Pulsar `Generate Mosaic`.
-9. Se generará `mosaic.json` directamente dentro de la carpeta de origen.
-10. Abrir esa carpeta/proyecto con `ImageMosaicView`.
+5. Configurar `Target Images`.
+6. Definir los requisitos y preferencias del mosaico.
+7. Pulsar `Analyze`.
+8. Revisar las imágenes, scores, detecciones y atributos visuales.
+9. Pulsar `Generate Mosaic`.
+10. Se generará `mosaic.json` directamente dentro de la carpeta de origen.
+11. Abrir esa carpeta/proyecto con `ImageMosaicView`.
 
 ## Prueba de visión
 
@@ -324,7 +441,7 @@ No se considera válida una configuración que simplemente simule la entrada de 
 
 ## Estado actual
 
-El proyecto se encuentra en desarrollo activo. La arquitectura principal, el análisis multimodal, el cache por carpeta, el ranking, la detección de personas y la exportación JSON están separados en módulos para permitir seguir mejorando cada etapa sin acoplarlas entre sí.
+El proyecto se encuentra en desarrollo activo. La arquitectura principal, el análisis multimodal, el cache por carpeta, el ranking, la detección de personas, la receta de selección y la exportación JSON están separados en módulos para permitir seguir mejorando cada etapa sin acoplarlas entre sí.
 
 ## Principios del proyecto
 
@@ -335,3 +452,5 @@ El proyecto se encuentra en desarrollo activo. La arquitectura principal, el an�
 - El modelo multimodal no debe inventar bounding boxes.
 - Los crops del proyecto final son dinámicos y se reconstruyen desde las coordenadas guardadas.
 - El formato de exportación debe respetar el contrato real del visualizador que lo consume.
+- Los requisitos obligatorios tienen prioridad sobre el ranking simple.
+- Los atributos inciertos se marcan como `unknown` en vez de inventarse.

@@ -8,7 +8,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from engine.cache import AnalysisCache
 from engine.image_analyzer import AnalysisPipeline
-from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout
+from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout, optimize_fixed_layout
 from engine.models import AppSettings, ImageRecord
 from engine.ranking import rank_records
 from engine.vision_llm import VisionLLMEngine
@@ -90,7 +90,7 @@ class PostProcessSignals(QObject):
 
 
 class PostProcessWorker(QRunnable):
-    """Run person detection, ranking and automatic layout selection off the UI thread."""
+    """Run person detection, ranking and layout selection off the UI thread."""
 
     def __init__(self, records: list[ImageRecord], settings: AppSettings):
         super().__init__()
@@ -138,34 +138,48 @@ class PostProcessWorker(QRunnable):
 
             requirements = self._settings.mosaic_requirements
             ranked = rank_records(self._records, self._settings.ranking_weights, requirements)
+            target = int(self._settings.target_images)
 
-            max_images = 100 if self._settings.target_images == 0 else max(0, self._settings.target_images)
-            layout = optimize_auto_layout(
-                ranked,
-                canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
-                padding_px=self._settings.padding_px,
-                requirements=requirements,
-                phash_threshold=self._settings.phash_threshold,
-                max_images=max_images,
-                initial_zoom=0.5,
-                min_zoom=0.1,
-                zoom_decay=0.9,
-                min_subject_px=120,
-            )
+            if target == 0:
+                layout = optimize_auto_layout(
+                    ranked,
+                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+                    padding_px=self._settings.padding_px,
+                    requirements=requirements,
+                    phash_threshold=self._settings.phash_threshold,
+                    max_images=100,
+                    min_zoom=0.1,
+                    zoom_decay=0.9,
+                    min_subject_px=160,
+                    target_subject_px=260,
+                    max_zoom=3.0,
+                )
+                mode = "AUTO"
+            else:
+                layout = optimize_fixed_layout(
+                    ranked,
+                    target=target,
+                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+                    padding_px=self._settings.padding_px,
+                    requirements=requirements,
+                    phash_threshold=self._settings.phash_threshold,
+                    min_subject_px=160,
+                    target_subject_px=260,
+                    max_zoom=3.0,
+                )
+                mode = f"FIXED={target}"
+
             apply_layout_selection(layout, ranked)
 
             if layout.unmet_requirements:
-                logger.warning(
-                    "[post] Unmet mosaic requirements: %s",
-                    ", ".join(layout.unmet_requirements),
-                )
-            mode = "AUTO" if self._settings.target_images == 0 else f"FIXED={self._settings.target_images}"
+                logger.warning("[post] Unmet mosaic requirements: %s", ", ".join(layout.unmet_requirements))
             logger.info(
-                "[post] layout mode=%s selected=%d avg_zoom=%.3f canvas_fill=%.1f%%",
+                "[post] layout mode=%s selected=%d avg_zoom=%.3f canvas_fill=%.1f%% subject=%.0fpx",
                 mode,
                 len(layout.placements),
                 layout.average_zoom,
                 layout.canvas_fill_ratio * 100.0,
+                layout.average_subject_px,
             )
             self.signals.finished.emit(ranked)
         except Exception as exc:

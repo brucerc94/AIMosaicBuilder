@@ -47,7 +47,6 @@ class SortOrder(str, Enum):
 class MosaicRequirements:
     """User constraints and soft preferences for the final mosaic."""
 
-    # Hard minimum composition counts.
     min_face_only: int = 0
     min_full_body: int = 0
     min_front: int = 0
@@ -58,16 +57,12 @@ class MosaicRequirements:
     min_face_visible: int = 0
     min_body_visible: int = 0
 
-    # Content policy: any, safe_only, nsfw_only.
     nsfw_policy: str = "any"
-
-    # Per-image hard quality exclusions.
     exclude_blurry: bool = False
     exclude_occluded: bool = False
     min_quality: float = 0.0
     min_person_visibility: float = 0.0
 
-    # Soft preferences used during ranking/selection.
     prefer_face_only: bool = False
     prefer_full_body: bool = False
     prefer_front: bool = False
@@ -311,6 +306,7 @@ class MosaicSelection:
     crop_bbox: Optional[BoundingBox] = None
     padding_px: int = 40
     manual_override: bool = False
+    zoom: float = 0.5
 
     def to_dict(self) -> dict:
         return {
@@ -319,6 +315,7 @@ class MosaicSelection:
             "crop_bbox": self.crop_bbox.to_dict() if self.crop_bbox else None,
             "padding_px": self.padding_px,
             "manual_override": self.manual_override,
+            "zoom": self.zoom,
         }
 
     @classmethod
@@ -330,6 +327,7 @@ class MosaicSelection:
             crop_bbox=BoundingBox.from_dict(cb) if cb else None,
             padding_px=int(d.get("padding_px", 40)),
             manual_override=bool(d.get("manual_override", False)),
+            zoom=float(d.get("zoom", 0.5)),
         )
 
 
@@ -407,7 +405,7 @@ class AppSettings:
     n_gpu_layers: int = 0
     n_threads: int = 4
     n_threads_batch: int = 0
-    target_images: int = 12
+    target_images: int = 0
     canvas_width: int = 3840
     canvas_height: int = 2160
     padding_px: int = 40
@@ -460,7 +458,7 @@ class AppSettings:
             n_gpu_layers=int(d.get("n_gpu_layers", 0)),
             n_threads=int(d.get("n_threads", 4)),
             n_threads_batch=int(d.get("n_threads_batch", 0)),
-            target_images=int(d.get("target_images", 12)),
+            target_images=int(d.get("target_images", 0)),
             canvas_width=int(d.get("canvas_width", 3840)),
             canvas_height=int(d.get("canvas_height", 2160)),
             padding_px=int(d.get("padding_px", 40)),

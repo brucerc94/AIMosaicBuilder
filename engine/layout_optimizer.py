@@ -229,14 +229,13 @@ def _layout_utility(evaluation: LayoutEvaluation, candidate_count: int, target_s
 
 
 def optimize_auto_layout(records: list[ImageRecord], canvas_size: tuple[int, int], padding_px: int, requirements: MosaicRequirements | None = None, phash_threshold: int = 10, max_images: int = 100, initial_zoom: float = 0.5, min_zoom: float = 0.1, zoom_decay: float = 0.9, min_subject_px: int = 160, target_subject_px: int = 260, max_zoom: float = 3.0) -> LayoutEvaluation:
-    """Automatically choose N and per-image zoom to use the canvas efficiently."""
+    """AUTO chooses both the number of images and the largest practical zoom."""
     del initial_zoom
     requirements = requirements or MosaicRequirements()
     candidates = _candidate_order(records, requirements)
     max_target = min(len(candidates), max(0, int(max_images)))
     if max_target <= 0:
         return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, _required_names(requirements), 0.0)
-
     best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [], 0.0)
     feasible_max = 0
     for target in range(1, max_target + 1):
@@ -251,19 +250,30 @@ def optimize_auto_layout(records: list[ImageRecord], canvas_size: tuple[int, int
         evaluation.layout_score = _layout_utility(evaluation, len(candidates), target_subject_px)
         if evaluation.layout_score > best.layout_score:
             best = evaluation
-
-    logger.info(
-        "AUTO layout: selected=%d/%d max=%d feasible_max=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx score=%.3f unmet=%s",
-        len(best.placements), len(candidates), max_images, feasible_max, canvas_size[0], canvas_size[1],
-        best.average_zoom, best.canvas_fill_ratio * 100.0, best.average_subject_px, best.layout_score,
-        ",".join(best.unmet_requirements) if best.unmet_requirements else "none",
-    )
+    logger.info("AUTO layout: selected=%d/%d max=%d feasible_max=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx score=%.3f unmet=%s", len(best.placements), len(candidates), max_images, feasible_max, canvas_size[0], canvas_size[1], best.average_zoom, best.canvas_fill_ratio * 100.0, best.average_subject_px, best.layout_score, ",".join(best.unmet_requirements) if best.unmet_requirements else "none")
     return best
+
+
+def optimize_fixed_layout(records: list[ImageRecord], target: int, canvas_size: tuple[int, int], padding_px: int, requirements: MosaicRequirements | None = None, phash_threshold: int = 10, min_subject_px: int = 160, target_subject_px: int = 260, max_zoom: float = 3.0) -> LayoutEvaluation:
+    """Use exactly target images and optimize their per-image zoom."""
+    requirements = requirements or MosaicRequirements()
+    candidates = _candidate_order(records, requirements)
+    target = max(0, min(int(target), len(candidates)))
+    selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
+    if target == 0:
+        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, unmet, 0.0)
+    evaluation = _optimize_target_layout(selected, canvas_size, padding_px, 0.1, 0.9, min_subject_px, target_subject_px, max_zoom)
+    if evaluation is None:
+        logger.warning("FIXED layout: could not place all %d requested images at the minimum readable size", target)
+        return LayoutEvaluation([], target, 0.0, 0.0, 0.0, 0.0, unmet + ["layout_capacity"], 0.0)
+    evaluation.unmet_requirements = unmet
+    evaluation.layout_score = _layout_utility(evaluation, len(candidates), target_subject_px)
+    logger.info("FIXED layout: selected=%d target=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx unmet=%s", len(evaluation.placements), target, canvas_size[0], canvas_size[1], evaluation.average_zoom, evaluation.canvas_fill_ratio * 100.0, evaluation.average_subject_px, ",".join(unmet) if unmet else "none")
+    return evaluation
 
 
 def simulate_viewer_layout(records: list[ImageRecord], canvas_size: tuple[int, int], padding_px: int, initial_zoom: float = 0.5, min_zoom: float = 0.1, zoom_decay: float = 0.9, min_subject_px: int = 0) -> list[LayoutPlacement]:
     """Simulate ImageMosaicView's packing using saved per-image zoom."""
-    del initial_zoom
     ordered = sorted(records, key=lambda r: (r.selection.slot_index if r.selection else 10**9, -(r.ranking.final_score if r.ranking else 0.0), r.filename.lower()))
     occupied: list[tuple[int, int, int, int]] = []
     placements: list[LayoutPlacement] = []
@@ -288,13 +298,6 @@ def apply_layout_selection(evaluation: LayoutEvaluation, all_records: list[Image
         placement = by_path.get(record.path)
         if placement is not None:
             record.status = ImageStatus.SELECTED
-            record.selection = MosaicSelection(
-                image_path=record.path,
-                slot_index=placement_index[record.path],
-                crop_bbox=placement.crop_bbox,
-                padding_px=0,
-                manual_override=record.manually_included,
-                zoom=placement.zoom,
-            )
+            record.selection = MosaicSelection(image_path=record.path, slot_index=placement_index[record.path], crop_bbox=placement.crop_bbox, padding_px=0, manual_override=record.manually_included, zoom=placement.zoom)
         elif record.status == ImageStatus.SELECTED:
             record.status = ImageStatus.REJECTED

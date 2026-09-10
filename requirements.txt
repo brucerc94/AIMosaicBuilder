@@ -1,0 +1,15 @@
+# Required
+PySide6>=6.5.0
+
+# Local LLM inference (multimodal)
+llama-cpp-python>=0.3.33,<0.4
+
+# Image processing
+Pillow>=10.0.0
+numpy>=1.24.0
+
+# Perceptual hashing for similarity detection
+imagehash>=4.3.0
+
+# Optional: faster similarity with scipy
+scipy>=1.11.0

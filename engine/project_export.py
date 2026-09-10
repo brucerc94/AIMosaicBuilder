@@ -29,11 +29,11 @@ def export_project(
     padding_px: int,
 ) -> Path:
     """
-    Export a project that ImageMosaicView can load directly.
+    Export an ImageMosaicView-compatible project.
 
-    The main ``mosaic.json`` file intentionally uses ImageMosaicView's real
-    project format: a top-level list of entries. Builder-specific metadata is
-    written separately so it never breaks the viewer's loader.
+    ImageMosaicView's current project loader expects the JSON root to be a
+    list of entry objects. Builder-specific metadata is written separately so
+    the viewer JSON contains only the fields it knows how to load.
     """
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -71,15 +71,16 @@ def export_project(
 
         crop_name = f"{slot + 1:03d}_{source.stem}_crop.jpg"
         crop_path = crops_dir / crop_name
-        save_crop(
+        if not save_crop(
             record.path,
             detection.bbox,
             str(crop_path),
             padding_px=padding_px,
             quality=92,
-        )
+        ):
+            raise RuntimeError(f"Could not create crop for {record.path}")
 
-        # EXACT viewer contract. Do not add builder metadata here.
+        # EXACT ImageMosaicView entry contract.
         viewer_entries.append({
             "type": "body",
             "filename": (Path("selected") / selected_name).as_posix(),
@@ -101,14 +102,19 @@ def export_project(
             "padding_px": padding_px,
         })
 
-    # This is the file that should be opened by ImageMosaicView.
-    mosaic_path = root / "mosaic.json"
-    mosaic_path.write_text(
-        json.dumps(viewer_entries, indent=2, ensure_ascii=False),
-        encoding="utf-8",
-    )
+    viewer_json = json.dumps(viewer_entries, indent=2, ensure_ascii=False)
 
-    # Keep application-specific data separate from the viewer project format.
+    # Primary file to open with ImageMosaicView.
+    mosaic_path = root / "mosaic.json"
+    mosaic_path.write_text(viewer_json, encoding="utf-8")
+
+    # Backward-compatible alias for older AI Mosaic Builder exports.
+    # It intentionally contains the SAME viewer-compatible list, not the old
+    # {"entries": [...]} wrapper that caused the ImageMosaicView load error.
+    legacy_path = root / "ai_mosaic_project.json"
+    legacy_path.write_text(viewer_json, encoding="utf-8")
+
+    # Builder-specific metadata is kept separate from the viewer project.
     metadata_payload = {
         "format": "ai-mosaic-builder",
         "version": 2,

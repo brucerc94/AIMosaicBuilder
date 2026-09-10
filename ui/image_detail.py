@@ -85,7 +85,6 @@ class BboxOverlayLabel(QLabel):
         )
 
         if self._bbox and self._bbox.is_valid() and self._img_w > 0 and self._img_h > 0:
-            # Scale bbox to displayed image coordinates
             sx = scaled.width() / self._img_w
             sy = scaled.height() / self._img_h
             rx = int(self._bbox.x * sx)
@@ -93,11 +92,9 @@ class BboxOverlayLabel(QLabel):
             rw = int(self._bbox.width * sx)
             rh = int(self._bbox.height * sy)
 
-            # Center offset (because scaled image is centred in label)
             cx = (display_w - scaled.width()) // 2
             cy = (display_h - scaled.height()) // 2
 
-            # Draw on a copy of the scaled pixmap
             combined = QPixmap(display_w, display_h)
             combined.fill(QColor("#181825"))
             painter = QPainter(combined)
@@ -121,9 +118,9 @@ class ImageDetailPanel(QWidget):
     Emits include_toggled / exclude_toggled when the user overrides AI selection.
     """
 
-    include_toggled = Signal(object)   # ImageRecord
-    exclude_toggled = Signal(object)   # ImageRecord
-    padding_changed = Signal(object, int)   # record, new_padding_px
+    include_toggled = Signal(object)
+    exclude_toggled = Signal(object)
+    padding_changed = Signal(object, int)
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
@@ -140,7 +137,6 @@ class ImageDetailPanel(QWidget):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
 
-        # ── Preview ────────────────────────────────────────────────────────
         preview_grp = QGroupBox("Preview")
         preview_v = QVBoxLayout(preview_grp)
 
@@ -152,7 +148,6 @@ class ImageDetailPanel(QWidget):
         preview_v.addWidget(self._preview_label)
         layout.addWidget(preview_grp)
 
-        # ── Scores ─────────────────────────────────────────────────────────
         scores_grp = QGroupBox("Scores")
         scores_form = QVBoxLayout(scores_grp)
 
@@ -169,19 +164,19 @@ class ImageDetailPanel(QWidget):
             scores_form.addLayout(row)
             return lbl, val
 
-        _, self._lbl_score      = score_row("Final Score:")
-        _, self._lbl_rank       = score_row("Rank:")
-        _, self._lbl_quality    = score_row("Image Quality:")
+        _, self._lbl_score = score_row("Final Score:")
+        _, self._lbl_rank = score_row("Rank:")
+        _, self._lbl_quality = score_row("Image Quality:")
         _, self._lbl_person_vis = score_row("Person Visibility:")
-        _, self._lbl_composition= score_row("Composition:")
-        _, self._lbl_blur       = score_row("Blur:")
+        _, self._lbl_composition = score_row("Composition:")
+        _, self._lbl_blur = score_row("Blur:")
         _, self._lbl_person_cnt = score_row("Persons:")
-        _, self._lbl_face       = score_row("Face Visible:")
-        _, self._lbl_mosaic     = score_row("Mosaic Value:")
-        _, self._lbl_status     = score_row("Status:")
+        _, self._lbl_face = score_row("Face Visible:")
+        _, self._lbl_body = score_row("Body Visible:")
+        _, self._lbl_mosaic = score_row("Mosaic Value:")
+        _, self._lbl_status = score_row("Status:")
         layout.addWidget(scores_grp)
 
-        # ── Crop preview ───────────────────────────────────────────────────
         crop_grp = QGroupBox("Crop Preview")
         crop_v = QVBoxLayout(crop_grp)
 
@@ -204,7 +199,6 @@ class ImageDetailPanel(QWidget):
         crop_v.addLayout(pad_row)
         layout.addWidget(crop_grp)
 
-        # ── Person notes ───────────────────────────────────────────────────
         notes_grp = QGroupBox("AI Notes")
         notes_v = QVBoxLayout(notes_grp)
         self._notes_label = QLabel("—")
@@ -213,7 +207,6 @@ class ImageDetailPanel(QWidget):
         notes_v.addWidget(self._notes_label)
         layout.addWidget(notes_grp)
 
-        # ── Manual overrides ───────────────────────────────────────────────
         override_grp = QGroupBox("Manual Override")
         override_v = QVBoxLayout(override_grp)
 
@@ -236,10 +229,7 @@ class ImageDetailPanel(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    # ── Public API ─────────────────────────────────────────────────────────
-
     def show_record(self, record: ImageRecord) -> None:
-        """Update all fields for the given ImageRecord."""
         self._current_record = record
         self._update_preview(record)
         self._update_scores(record)
@@ -253,14 +243,20 @@ class ImageDetailPanel(QWidget):
         self._preview_label.set_bbox(None)
         self._crop_label.setText("—")
         for lbl in [
-            self._lbl_score, self._lbl_rank, self._lbl_quality,
-            self._lbl_person_vis, self._lbl_composition, self._lbl_blur,
-            self._lbl_person_cnt, self._lbl_face, self._lbl_mosaic, self._lbl_status,
+            self._lbl_score,
+            self._lbl_rank,
+            self._lbl_quality,
+            self._lbl_person_vis,
+            self._lbl_composition,
+            self._lbl_blur,
+            self._lbl_person_cnt,
+            self._lbl_face,
+            self._lbl_body,
+            self._lbl_mosaic,
+            self._lbl_status,
         ]:
             lbl.setText("—")
         self._notes_label.setText("—")
-
-    # ── Internals ──────────────────────────────────────────────────────────
 
     def _update_preview(self, record: ImageRecord) -> None:
         try:
@@ -269,7 +265,6 @@ class ImageDetailPanel(QWidget):
                 self._preview_label.setText("Cannot load image")
                 return
             self._preview_label.set_image(px, record.width, record.height)
-            # Set bbox if we have detections
             if record.detections:
                 main = next((d for d in record.detections if d.is_main), record.detections[0])
                 self._preview_label.set_bbox(main.bbox)
@@ -283,33 +278,16 @@ class ImageDetailPanel(QWidget):
         a = record.analysis
         r = record.ranking
 
-        self._lbl_score.setText(
-            f"{r.final_score:.1f} / 100" if r else "—"
-        )
-        self._lbl_rank.setText(
-            f"#{r.rank}" if (r and r.rank > 0) else "—"
-        )
-        self._lbl_quality.setText(
-            f"{a.image_quality:.0%}" if a else "—"
-        )
-        self._lbl_person_vis.setText(
-            f"{a.person_visibility:.0%}" if a else "—"
-        )
-        self._lbl_composition.setText(
-            f"{a.composition:.0%}" if a else "—"
-        )
-        self._lbl_blur.setText(
-            f"{a.blur:.0%}" if a else "—"
-        )
-        self._lbl_person_cnt.setText(
-            str(a.person_count) if a else "—"
-        )
-        self._lbl_face.setText(
-            ("Yes" if a.face_visible else "No") if a else "—"
-        )
-        self._lbl_mosaic.setText(
-            f"{a.mosaic_value:.0%}" if a else "—"
-        )
+        self._lbl_score.setText(f"{r.final_score:.1f} / 100" if r else "—")
+        self._lbl_rank.setText(f"#{r.rank}" if (r and r.rank > 0) else "—")
+        self._lbl_quality.setText(f"{a.image_quality:.0%}" if a else "—")
+        self._lbl_person_vis.setText(f"{a.person_visibility:.0%}" if a else "—")
+        self._lbl_composition.setText(f"{a.composition:.0%}" if a else "—")
+        self._lbl_blur.setText(f"{a.blur:.0%}" if a else "—")
+        self._lbl_person_cnt.setText(str(a.person_count) if a else "—")
+        self._lbl_face.setText(("Yes" if a.face_visible else "No") if a else "—")
+        self._lbl_body.setText(("Yes" if a.body_visible else "No") if a else "—")
+        self._lbl_mosaic.setText(f"{a.mosaic_value:.0%}" if a else "—")
         self._lbl_status.setText(record.status.value.upper())
 
     def _update_crop_preview(self, record: ImageRecord) -> None:
@@ -328,7 +306,6 @@ class ImageDetailPanel(QWidget):
             if cropped is None:
                 self._crop_label.setText("Crop error")
                 return
-            # Convert PIL Image to QPixmap
             import io
             buf = io.BytesIO()
             cropped.save(buf, format="PNG")

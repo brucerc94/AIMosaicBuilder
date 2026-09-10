@@ -227,6 +227,7 @@ class VisionLLMEngine:
         self._model_path = ""
         self._mmproj_path = ""
         self._model_name = ""
+        self._model_ctx = 0
         self._vision_ready = False
         self._capabilities: Optional[dict] = None
         self._lock = threading.RLock()

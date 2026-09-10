@@ -90,12 +90,7 @@ class MainWindow(QMainWindow):
         self.details.exclude_toggled.connect(self._toggle_exclude)
 
     def _settings_changed(self, settings) -> None:
-        if self._generate_worker:
-            # Generation uses a snapshot of settings captured at start. Save new
-            # settings for the next generation, but don't mutate the active job.
-            self._settings = settings
-        else:
-            self._settings = settings
+        self._settings = settings
         if settings.last_source_folder:
             self._cache = self._get_cache_for_source(settings.last_source_folder)
         save_settings(settings)
@@ -247,8 +242,7 @@ class MainWindow(QMainWindow):
     def _generate_project(self) -> None:
         if self._generate_worker or self._loader or self._analysis_worker or self._post_worker:
             return
-        candidates = self._layout_candidates()
-        if not candidates:
+        if not self._layout_candidates():
             QMessageBox.warning(self, "Generate Mosaic", "No valid mosaic candidates are available. Run Analyze first.")
             return
 
@@ -256,8 +250,9 @@ class MainWindow(QMainWindow):
         # the active optimization job.
         generation_settings = copy.deepcopy(self._settings)
         worker = GenerateMosaicWorker(list(self._records), generation_settings)
-        worker.signals.progress.connect(lambda text: self._summary.setText(text))
+        worker.signals.progress.connect(self._summary.setText)
         worker.signals.finished.connect(self._on_generate_finished)
+        worker.signals.cancelled.connect(self._on_generate_cancelled)
         worker.signals.error.connect(self._on_generate_error)
         self._generate_worker = worker
         self.settings_panel.set_generate_enabled(False)
@@ -283,6 +278,12 @@ class MainWindow(QMainWindow):
             "Project generated",
             f"Saved to:\n{path}\n\nMode: {mode}\nImages: {image_count}\nCanvas fill: {canvas_fill:.1%}\nAverage zoom: {average_zoom:.3f}",
         )
+
+    def _on_generate_cancelled(self) -> None:
+        self._generate_worker = None
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self._update_summary()
+        self._summary.setText("Mosaic generation cancelled")
 
     def _on_generate_error(self, message: str) -> None:
         self._generate_worker = None

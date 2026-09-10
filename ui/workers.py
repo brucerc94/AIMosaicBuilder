@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from PySide6.QtCore import QObject, QRunnable, Signal
+from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from engine.cache import AnalysisCache
 from engine.image_analyzer import AnalysisPipeline

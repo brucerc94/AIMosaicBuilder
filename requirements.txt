@@ -3,13 +3,15 @@ PySide6>=6.5.0
 
 # Local LLM / multimodal vision
 # Gemma-4 support requires a llama-cpp-python release that includes Gemma4ChatHandler.
-llama-cpp-python>=0.3.35,<0.4
+llama-cpp-python>=0.3.33,<0.4
 
 # Image processing
 Pillow>=10.0.0
 numpy>=1.24.0
 
-# Real person detection backend
+# Person detection
+ultralytics>=8.3.0
+# OpenCV remains available for the lightweight HOG fallback.
 opencv-python>=4.8.0
 
 # Perceptual hashing for near-duplicate detection

@@ -89,7 +89,7 @@ class PostProcessSignals(QObject):
 
 
 class PostProcessWorker(QRunnable):
-    """Run real person detection, ranking and diversity selection off the UI thread."""
+    """Run person detection, ranking and diversity selection off the UI thread."""
     def __init__(self, records: list[ImageRecord], settings: AppSettings):
         super().__init__()
         self._records = records
@@ -103,19 +103,45 @@ class PostProcessWorker(QRunnable):
     def run(self) -> None:
         try:
             total = len(self._records)
+            detector_model = getattr(self._settings, "person_detector_model", "yolo26n.pt")
+            detector_conf = float(getattr(self._settings, "person_detector_confidence", 0.25))
+            detector = None
+            detector_error = None
+
+            # Instantiate once so a model is not loaded once per image.
+            try:
+                from vision.person_detector import get_default_detector
+                detector = get_default_detector(model_path=detector_model, confidence=detector_conf)
+                logger.info("[post] person detector=%s", detector.name)
+            except Exception as exc:
+                detector_error = str(exc)
+                logger.error("[post] person detector initialization failed: %s", exc, exc_info=True)
+
             for index, record in enumerate(self._records, start=1):
                 if self._cancelled:
                     break
                 if record.analysis and record.analysis.has_person and not record.manually_excluded:
-                    record.detections = detect_persons(record.path, record.analysis)
-                    if not record.detections:
-                        record.error_message = "No real person bounding box detected."
+                    if detector is None:
+                        record.error_message = detector_error or "No person detector available."
+                    else:
+                        record.detections = detect_persons(
+                            record.path,
+                            record.analysis,
+                            backend=detector,
+                            model_path=detector_model,
+                            confidence=detector_conf,
+                        )
+                        if not record.detections:
+                            record.error_message = "No real person bounding box detected."
                 self.signals.progress.emit(index, total, record.filename)
 
             ranked = rank_records(self._records, self._settings.ranking_weights)
             valid = [
                 record for record in ranked
-                if record.analysis and record.analysis.has_person and record.detections and not record.manually_excluded
+                if record.analysis
+                and record.analysis.has_person
+                and record.detections
+                and not record.manually_excluded
             ]
             target = self._settings.target_images
             if target == 0:

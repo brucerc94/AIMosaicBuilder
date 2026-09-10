@@ -8,8 +8,9 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from engine.cache import AnalysisCache
 from engine.image_analyzer import AnalysisPipeline
+from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout
 from engine.models import AppSettings, ImageRecord
-from engine.ranking import apply_diversity_filter, auto_target_count, rank_records
+from engine.ranking import rank_records
 from engine.vision_llm import VisionLLMEngine
 from vision.person_detector import detect_persons
 
@@ -89,7 +90,8 @@ class PostProcessSignals(QObject):
 
 
 class PostProcessWorker(QRunnable):
-    """Run person detection, ranking and requirement-aware selection off the UI thread."""
+    """Run person detection, ranking and automatic layout selection off the UI thread."""
+
     def __init__(self, records: list[ImageRecord], settings: AppSettings):
         super().__init__()
         self._records = records
@@ -135,32 +137,35 @@ class PostProcessWorker(QRunnable):
                 self.signals.progress.emit(index, total, record.filename)
 
             requirements = self._settings.mosaic_requirements
-            ranked = rank_records(
-                self._records,
-                self._settings.ranking_weights,
-                requirements,
-            )
-            valid = [
-                record for record in ranked
-                if record.analysis
-                and record.analysis.has_person
-                and record.detections
-                and not record.manually_excluded
-                and not record.ranking is None
-                and record.ranking.final_score > 0
-            ]
-            target = self._settings.target_images
-            if target == 0:
-                target = auto_target_count(
-                    len(valid),
-                    self._settings.canvas_width,
-                    self._settings.canvas_height,
-                )
-            apply_diversity_filter(
+            ranked = rank_records(self._records, self._settings.ranking_weights, requirements)
+
+            max_images = 100 if self._settings.target_images == 0 else max(0, self._settings.target_images)
+            layout = optimize_auto_layout(
                 ranked,
-                target,
-                self._settings.phash_threshold,
-                requirements,
+                canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+                padding_px=self._settings.padding_px,
+                requirements=requirements,
+                phash_threshold=self._settings.phash_threshold,
+                max_images=max_images,
+                initial_zoom=0.5,
+                min_zoom=0.1,
+                zoom_decay=0.9,
+                min_subject_px=120,
+            )
+            apply_layout_selection(layout, ranked)
+
+            if layout.unmet_requirements:
+                logger.warning(
+                    "[post] Unmet mosaic requirements: %s",
+                    ", ".join(layout.unmet_requirements),
+                )
+            mode = "AUTO" if self._settings.target_images == 0 else f"FIXED={self._settings.target_images}"
+            logger.info(
+                "[post] layout mode=%s selected=%d avg_zoom=%.3f canvas_fill=%.1f%%",
+                mode,
+                len(layout.placements),
+                layout.average_zoom,
+                layout.canvas_fill_ratio * 100.0,
             )
             self.signals.finished.emit(ranked)
         except Exception as exc:

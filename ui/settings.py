@@ -3,11 +3,10 @@ from __future__ import annotations
 
 import logging
 import os
-from pathlib import Path
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox,
     QVBoxLayout, QWidget,
 )
@@ -104,6 +103,68 @@ class SettingsPanel(QWidget):
         self._canvas_h_spin = QSpinBox(); self._canvas_h_spin.setRange(600, 12000); self._canvas_h_spin.setSingleStep(240); self._canvas_h_spin.setSuffix(" px"); f_mosaic.addRow("Canvas Height:", self._canvas_h_spin)
         layout.addWidget(grp_mosaic)
 
+        # ── Mosaic requirements ─────────────────────────────────────────────
+        grp_req = QGroupBox("Mosaic Requirements")
+        req_layout = QVBoxLayout(grp_req)
+        req_layout.addWidget(QLabel("Minimum required images (0 = no requirement)"))
+        req_form = QFormLayout()
+        self._req_face_only = QSpinBox(); self._req_face_only.setRange(0, 99)
+        self._req_full_body = QSpinBox(); self._req_full_body.setRange(0, 99)
+        self._req_front = QSpinBox(); self._req_front.setRange(0, 99)
+        self._req_side = QSpinBox(); self._req_side.setRange(0, 99)
+        self._req_back = QSpinBox(); self._req_back.setRange(0, 99)
+        self._req_male = QSpinBox(); self._req_male.setRange(0, 99)
+        self._req_female = QSpinBox(); self._req_female.setRange(0, 99)
+        self._req_face_visible = QSpinBox(); self._req_face_visible.setRange(0, 99)
+        self._req_body_visible = QSpinBox(); self._req_body_visible.setRange(0, 99)
+        req_form.addRow("Face only:", self._req_face_only)
+        req_form.addRow("Full body:", self._req_full_body)
+        req_form.addRow("Front:", self._req_front)
+        req_form.addRow("Side:", self._req_side)
+        req_form.addRow("Back:", self._req_back)
+        req_form.addRow("Male:", self._req_male)
+        req_form.addRow("Female:", self._req_female)
+        req_form.addRow("Face visible:", self._req_face_visible)
+        req_form.addRow("Body visible:", self._req_body_visible)
+        req_layout.addLayout(req_form)
+
+        content_row = QHBoxLayout()
+        content_row.addWidget(QLabel("Content:"))
+        self._req_nsfw = QComboBox()
+        self._req_nsfw.addItem("Don't care", "any")
+        self._req_nsfw.addItem("Safe only", "safe_only")
+        self._req_nsfw.addItem("NSFW only", "nsfw_only")
+        content_row.addWidget(self._req_nsfw)
+        req_layout.addLayout(content_row)
+
+        self._req_exclude_blurry = QCheckBox("Exclude blurry images")
+        self._req_exclude_occluded = QCheckBox("Exclude heavily occluded images")
+        req_layout.addWidget(self._req_exclude_blurry)
+        req_layout.addWidget(self._req_exclude_occluded)
+
+        quality_form = QFormLayout()
+        self._req_min_quality = QDoubleSpinBox(); self._req_min_quality.setRange(0.0, 1.0); self._req_min_quality.setSingleStep(0.05); self._req_min_quality.setDecimals(2); self._req_min_quality.setSuffix(" / 1")
+        self._req_min_visibility = QDoubleSpinBox(); self._req_min_visibility.setRange(0.0, 1.0); self._req_min_visibility.setSingleStep(0.05); self._req_min_visibility.setDecimals(2); self._req_min_visibility.setSuffix(" / 1")
+        quality_form.addRow("Min image quality:", self._req_min_quality)
+        quality_form.addRow("Min person visibility:", self._req_min_visibility)
+        req_layout.addLayout(quality_form)
+
+        req_layout.addWidget(QLabel("Soft preferences (used to break ties and improve the recipe)"))
+        self._pref_face_only = QCheckBox("Prefer face-only")
+        self._pref_full_body = QCheckBox("Prefer full-body")
+        self._pref_front = QCheckBox("Prefer front")
+        self._pref_side = QCheckBox("Prefer side")
+        self._pref_back = QCheckBox("Prefer back")
+        self._pref_solo = QCheckBox("Prefer solo person")
+        self._pref_face_visible = QCheckBox("Prefer face visible")
+        self._pref_body_visible = QCheckBox("Prefer body visible")
+        for widget in (
+            self._pref_face_only, self._pref_full_body, self._pref_front, self._pref_side,
+            self._pref_back, self._pref_solo, self._pref_face_visible, self._pref_body_visible,
+        ):
+            req_layout.addWidget(widget)
+        layout.addWidget(grp_req)
+
         grp_thresh = QGroupBox("Thresholds")
         f_thresh = QFormLayout(grp_thresh)
         self._min_w_spin = QSpinBox(); self._min_w_spin.setRange(50, 2000); self._min_w_spin.setSuffix(" px"); f_thresh.addRow("Min Width:", self._min_w_spin)
@@ -120,9 +181,27 @@ class SettingsPanel(QWidget):
         layout.addWidget(grp_actions); layout.addStretch()
         scroll.setWidget(container); outer.addWidget(scroll)
 
-        widgets = [self._folder_edit, self._model_edit, self._mmproj_edit, self._gpu_spin, self._ctx_spin, self._threads_spin, self._batch_threads_spin, self._detector_model_edit, self._detector_conf_spin, self._target_combo, self._padding_spin, self._canvas_w_spin, self._canvas_h_spin, self._min_w_spin, self._min_h_spin, self._similarity_spin]
+        widgets = [
+            self._folder_edit, self._model_edit, self._mmproj_edit, self._gpu_spin, self._ctx_spin,
+            self._threads_spin, self._batch_threads_spin, self._detector_model_edit,
+            self._detector_conf_spin, self._target_combo, self._padding_spin, self._canvas_w_spin,
+            self._canvas_h_spin, self._min_w_spin, self._min_h_spin, self._similarity_spin,
+            self._req_face_only, self._req_full_body, self._req_front, self._req_side, self._req_back,
+            self._req_male, self._req_female, self._req_face_visible, self._req_body_visible,
+            self._req_nsfw, self._req_exclude_blurry, self._req_exclude_occluded,
+            self._req_min_quality, self._req_min_visibility, self._pref_face_only,
+            self._pref_full_body, self._pref_front, self._pref_side, self._pref_back,
+            self._pref_solo, self._pref_face_visible, self._pref_body_visible,
+        ]
         for widget in widgets:
-            signal = widget.textChanged if isinstance(widget, QLineEdit) else widget.currentIndexChanged if isinstance(widget, QComboBox) else widget.valueChanged
+            if isinstance(widget, QLineEdit):
+                signal = widget.textChanged
+            elif isinstance(widget, QComboBox):
+                signal = widget.currentIndexChanged
+            elif isinstance(widget, QCheckBox):
+                signal = widget.stateChanged
+            else:
+                signal = widget.valueChanged
             signal.connect(self._on_changed)
 
     def _populate(self, s: AppSettings) -> None:
@@ -132,6 +211,12 @@ class SettingsPanel(QWidget):
         self._detector_model_edit.setText(s.person_detector_model); self._detector_conf_spin.setValue(s.person_detector_confidence)
         idx = self._target_combo.findData(s.target_images); self._target_combo.setCurrentIndex(max(0, idx if idx >= 0 else self._target_combo.findData(12)))
         self._padding_spin.setValue(s.padding_px); self._canvas_w_spin.setValue(s.canvas_width); self._canvas_h_spin.setValue(s.canvas_height); self._min_w_spin.setValue(s.min_image_width); self._min_h_spin.setValue(s.min_image_height); self._similarity_spin.setValue(s.phash_threshold)
+
+        r = s.mosaic_requirements
+        self._req_face_only.setValue(r.min_face_only); self._req_full_body.setValue(r.min_full_body); self._req_front.setValue(r.min_front); self._req_side.setValue(r.min_side); self._req_back.setValue(r.min_back); self._req_male.setValue(r.min_male); self._req_female.setValue(r.min_female); self._req_face_visible.setValue(r.min_face_visible); self._req_body_visible.setValue(r.min_body_visible)
+        idx = self._req_nsfw.findData(r.nsfw_policy); self._req_nsfw.setCurrentIndex(max(0, idx))
+        self._req_exclude_blurry.setChecked(r.exclude_blurry); self._req_exclude_occluded.setChecked(r.exclude_occluded); self._req_min_quality.setValue(r.min_quality); self._req_min_visibility.setValue(r.min_person_visibility)
+        self._pref_face_only.setChecked(r.prefer_face_only); self._pref_full_body.setChecked(r.prefer_full_body); self._pref_front.setChecked(r.prefer_front); self._pref_side.setChecked(r.prefer_side); self._pref_back.setChecked(r.prefer_back); self._pref_solo.setChecked(r.prefer_solo); self._pref_face_visible.setChecked(r.prefer_face_visible); self._pref_body_visible.setChecked(r.prefer_body_visible)
         self._building = False
 
     def current_settings(self) -> AppSettings:
@@ -140,6 +225,11 @@ class SettingsPanel(QWidget):
         s.n_gpu_layers = self._gpu_spin.value(); s.n_ctx = self._ctx_spin.value(); s.n_threads = self._threads_spin.value(); s.n_threads_batch = self._batch_threads_spin.value()
         s.person_detector_model = self._detector_model_edit.text().strip(); s.person_detector_confidence = self._detector_conf_spin.value()
         s.target_images = self._target_combo.currentData(); s.padding_px = self._padding_spin.value(); s.canvas_width = self._canvas_w_spin.value(); s.canvas_height = self._canvas_h_spin.value(); s.min_image_width = self._min_w_spin.value(); s.min_image_height = self._min_h_spin.value(); s.phash_threshold = self._similarity_spin.value()
+
+        r = s.mosaic_requirements
+        r.min_face_only = self._req_face_only.value(); r.min_full_body = self._req_full_body.value(); r.min_front = self._req_front.value(); r.min_side = self._req_side.value(); r.min_back = self._req_back.value(); r.min_male = self._req_male.value(); r.min_female = self._req_female.value(); r.min_face_visible = self._req_face_visible.value(); r.min_body_visible = self._req_body_visible.value()
+        r.nsfw_policy = str(self._req_nsfw.currentData() or "any"); r.exclude_blurry = self._req_exclude_blurry.isChecked(); r.exclude_occluded = self._req_exclude_occluded.isChecked(); r.min_quality = self._req_min_quality.value(); r.min_person_visibility = self._req_min_visibility.value()
+        r.prefer_face_only = self._pref_face_only.isChecked(); r.prefer_full_body = self._pref_full_body.isChecked(); r.prefer_front = self._pref_front.isChecked(); r.prefer_side = self._pref_side.isChecked(); r.prefer_back = self._pref_back.isChecked(); r.prefer_solo = self._pref_solo.isChecked(); r.prefer_face_visible = self._pref_face_visible.isChecked(); r.prefer_body_visible = self._pref_body_visible.isChecked()
         return s
 
     def set_analyzing(self, active: bool) -> None:
@@ -149,7 +239,8 @@ class SettingsPanel(QWidget):
         self._btn_generate.setEnabled(enabled)
 
     def _on_changed(self, *_) -> None:
-        if not self._building: self.settings_changed.emit(self.current_settings())
+        if not self._building:
+            self.settings_changed.emit(self.current_settings())
 
     def _browse_folder(self) -> None:
         current = self._folder_edit.text().strip(); start = current if current and os.path.isdir(current) else os.path.expanduser("~")

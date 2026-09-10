@@ -9,8 +9,10 @@ from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QSplitter, QVBox
 
 from engine.cache import get_cache, source_cache_dir
 from engine.image_analyzer import build_record, discover_images
+from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout, optimize_fixed_layout
 from engine.models import ImageRecord, ImageStatus
 from engine.project_export import export_project
+from engine.ranking import rank_records
 from engine.session import save_session
 from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
@@ -46,7 +48,7 @@ class MainWindow(QMainWindow):
         self._update_summary()
 
     @staticmethod
-    def _get_cache_for_source(source_folder: str) :
+    def _get_cache_for_source(source_folder: str):
         """Get the analysis cache owned by the selected source folder."""
         if source_folder and Path(source_folder).is_dir():
             return get_cache(str(source_cache_dir(source_folder)))
@@ -109,9 +111,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Vision projector", "A valid mmproj file is required.")
             return
 
-        # Always switch to the cache owned by the current source folder before
-        # discovering/analyzing images. This prevents one source folder from
-        # reusing another folder's analysis cache.
         self._cache = self._get_cache_for_source(str(folder))
         self._settings.cache_directory = str(source_cache_dir(folder))
         save_settings(self._settings)
@@ -170,7 +169,7 @@ class MainWindow(QMainWindow):
         self._records = records
         self.grid.load_records(records)
         self.settings_panel.set_analyzing(False)
-        self.settings_panel.set_generate_enabled(bool(self._selected_records()))
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
         if self._settings.last_source_folder:
             save_session(self._settings.last_source_folder, records)
         self._update_summary()
@@ -178,11 +177,25 @@ class MainWindow(QMainWindow):
     def _selected_records(self) -> list[ImageRecord]:
         return [r for r in self._records if r.status == ImageStatus.SELECTED]
 
+    def _layout_candidates(self) -> list[ImageRecord]:
+        return [
+            r for r in self._records
+            if r.analysis
+            and r.analysis.has_person
+            and r.detections
+            and r.ranking
+            and r.ranking.final_score > 0
+            and not r.manually_excluded
+        ]
+
     def _update_summary(self) -> None:
         people = sum(1 for r in self._records if r.analysis and r.analysis.has_person)
         selected = len(self._selected_records())
+        candidates = len(self._layout_candidates())
         errors = sum(1 for r in self._records if r.status == ImageStatus.ERROR)
-        self._summary.setText(f"{len(self._records)} images | people: {people} | selected: {selected} | errors: {errors}")
+        self._summary.setText(
+            f"{len(self._records)} images | people: {people} | candidates: {candidates} | selected: {selected} | errors: {errors}"
+        )
 
     def _stop(self) -> None:
         if self._analysis_worker:
@@ -195,46 +208,94 @@ class MainWindow(QMainWindow):
         record.manually_included = not record.manually_included
         if record.manually_included:
             record.manually_excluded = False
-        self._rerun_postprocess()
+        self._rerank_without_detection()
         self.details.show_record(record)
 
     def _toggle_exclude(self, record: ImageRecord) -> None:
         record.manually_excluded = not record.manually_excluded
         if record.manually_excluded:
             record.manually_included = False
-        self._rerun_postprocess()
+        self._rerank_without_detection()
         self.details.show_record(record)
 
-    def _rerun_postprocess(self) -> None:
-        if not self._records or self._analysis_worker or self._post_worker:
+    def _rerank_without_detection(self) -> None:
+        if not self._records:
             return
-        worker = PostProcessWorker(self._records, self._settings)
-        worker.signals.progress.connect(
-            lambda done, total, name: self._summary.setText(f"Updating selection {done}/{total} — {name}")
+        self._records = rank_records(
+            self._records,
+            self._settings.ranking_weights,
+            self._settings.mosaic_requirements,
         )
-        worker.signals.finished.connect(self._on_post_finished)
-        worker.signals.error.connect(self._on_worker_error)
-        self._post_worker = worker
-        self.settings_panel.set_generate_enabled(False)
-        self._pool.start(worker)
+        self.grid.load_records(self._records)
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        if self._settings.last_source_folder:
+            save_session(self._settings.last_source_folder, self._records)
+        self._update_summary()
 
     def _generate_project(self) -> None:
-        selected = self._selected_records()
-        if not selected:
+        candidates = self._layout_candidates()
+        if not candidates:
+            QMessageBox.warning(self, "Generate Mosaic", "No valid mosaic candidates are available. Run Analyze first.")
             return
 
         source_folder = Path(self._settings.last_source_folder)
+        self._summary.setText("Optimizing canvas layout…")
         try:
+            requirements = self._settings.mosaic_requirements
+            target = int(self._settings.target_images)
+            if target == 0:
+                layout = optimize_auto_layout(
+                    candidates,
+                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+                    padding_px=self._settings.padding_px,
+                    requirements=requirements,
+                    phash_threshold=self._settings.phash_threshold,
+                    max_images=100,
+                    min_zoom=0.1,
+                    zoom_decay=0.9,
+                    min_subject_px=160,
+                    target_subject_px=260,
+                    max_zoom=3.0,
+                )
+                mode = "AUTO"
+            else:
+                layout = optimize_fixed_layout(
+                    candidates,
+                    target=target,
+                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+                    padding_px=self._settings.padding_px,
+                    requirements=requirements,
+                    phash_threshold=self._settings.phash_threshold,
+                    min_subject_px=160,
+                    target_subject_px=260,
+                    max_zoom=3.0,
+                )
+                mode = f"FIXED={target}"
+
+            if not layout.placements:
+                QMessageBox.warning(self, "Generate Mosaic", "No layout could fit the requested requirements and canvas.")
+                self._update_summary()
+                return
+
+            apply_layout_selection(layout, self._records)
             path = export_project(
                 str(source_folder),
-                selected,
+                self._selected_records(),
                 (self._settings.canvas_width, self._settings.canvas_height),
                 self._settings.padding_px,
             )
+            if self._settings.last_source_folder:
+                save_session(self._settings.last_source_folder, self._records)
+            self.grid.load_records(self._records)
+            self._update_summary()
+            QMessageBox.information(
+                self,
+                "Project generated",
+                f"Saved to:\n{path}\n\nMode: {mode}\nImages: {len(layout.placements)}\nCanvas fill: {layout.canvas_fill_ratio:.1%}\nAverage zoom: {layout.average_zoom:.3f}",
+            )
         except Exception as exc:
+            self._update_summary()
             QMessageBox.critical(self, "Generate failed", str(exc))
-            return
-        QMessageBox.information(self, "Project generated", f"Saved to:\n{path}")
 
     def _on_worker_error(self, message: str) -> None:
         self._loader = None

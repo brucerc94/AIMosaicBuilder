@@ -89,7 +89,7 @@ class PostProcessSignals(QObject):
 
 
 class PostProcessWorker(QRunnable):
-    """Run person detection, ranking and diversity selection off the UI thread."""
+    """Run person detection, ranking and requirement-aware selection off the UI thread."""
     def __init__(self, records: list[ImageRecord], settings: AppSettings):
         super().__init__()
         self._records = records
@@ -108,7 +108,6 @@ class PostProcessWorker(QRunnable):
             detector = None
             detector_error = None
 
-            # Instantiate once so a model is not loaded once per image.
             try:
                 from vision.person_detector import get_default_detector
                 detector = get_default_detector(model_path=detector_model, confidence=detector_conf)
@@ -135,18 +134,34 @@ class PostProcessWorker(QRunnable):
                             record.error_message = "No real person bounding box detected."
                 self.signals.progress.emit(index, total, record.filename)
 
-            ranked = rank_records(self._records, self._settings.ranking_weights)
+            requirements = self._settings.mosaic_requirements
+            ranked = rank_records(
+                self._records,
+                self._settings.ranking_weights,
+                requirements,
+            )
             valid = [
                 record for record in ranked
                 if record.analysis
                 and record.analysis.has_person
                 and record.detections
                 and not record.manually_excluded
+                and not record.ranking is None
+                and record.ranking.final_score > 0
             ]
             target = self._settings.target_images
             if target == 0:
-                target = auto_target_count(len(valid), self._settings.canvas_width, self._settings.canvas_height)
-            apply_diversity_filter(ranked, target, self._settings.phash_threshold)
+                target = auto_target_count(
+                    len(valid),
+                    self._settings.canvas_width,
+                    self._settings.canvas_height,
+                )
+            apply_diversity_filter(
+                ranked,
+                target,
+                self._settings.phash_threshold,
+                requirements,
+            )
             self.signals.finished.emit(ranked)
         except Exception as exc:
             logger.error("Post-processing failed: %s", exc, exc_info=True)

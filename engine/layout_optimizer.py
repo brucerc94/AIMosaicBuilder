@@ -76,13 +76,29 @@ def _place_box(
     initial_zoom: float,
     min_zoom: float,
     zoom_decay: float,
+    min_subject_px: int,
+    target_subject_px: int,
+    max_zoom: float,
 ) -> LayoutPlacement | None:
-    zoom = max(min_zoom, initial_zoom)
+    """Find a readable zoom, preferring a subject size instead of a fixed zoom."""
+    detection = _best_detection(record)
+    subject_height = max(1, detection.bbox.height)
+    ideal_zoom = target_subject_px / float(subject_height)
+    # Keep the viewer's original 0.5 as a neutral fallback, but permit zoom-in
+    # for small subjects and zoom-out for very large crops.
+    preferred_zoom = max(min_zoom, min(max_zoom, ideal_zoom))
+    if not preferred_zoom or preferred_zoom != preferred_zoom:
+        preferred_zoom = max(min_zoom, min(max_zoom, initial_zoom))
+
+    zoom = preferred_zoom
     while zoom >= min_zoom - 1e-9:
         width = max(1, int(crop.width * zoom))
         height = max(1, int(crop.height * zoom))
         position = _find_non_overlap_position(canvas_w, canvas_h, width, height, occupied)
         if position is not None:
+            displayed_subject_px = int(subject_height * zoom)
+            if displayed_subject_px < min_subject_px:
+                return None
             return LayoutPlacement(record, crop, round(zoom, 6), width, height, position[0], position[1])
         zoom *= zoom_decay
     return None
@@ -97,6 +113,9 @@ def _place(
     initial_zoom: float,
     min_zoom: float,
     zoom_decay: float,
+    min_subject_px: int,
+    target_subject_px: int,
+    max_zoom: float,
 ) -> LayoutPlacement | None:
     if not record.detections or record.width <= 0 or record.height <= 0:
         return None
@@ -109,6 +128,9 @@ def _place(
         initial_zoom,
         min_zoom,
         zoom_decay,
+        min_subject_px,
+        target_subject_px,
+        max_zoom,
     )
 
 
@@ -209,6 +231,8 @@ def _evaluate(
     min_zoom: float,
     zoom_decay: float,
     min_subject_px: int,
+    target_subject_px: int,
+    max_zoom: float,
 ) -> LayoutEvaluation:
     canvas_w, canvas_h = map(int, canvas_size)
     occupied: list[tuple[int, int, int, int]] = []
@@ -228,11 +252,12 @@ def _evaluate(
         ]
         placed = False
         for candidate in matching:
-            placement = _place(candidate, canvas_w, canvas_h, padding_px, occupied, initial_zoom, min_zoom, zoom_decay)
+            placement = _place(
+                candidate, canvas_w, canvas_h, padding_px, occupied,
+                initial_zoom, min_zoom, zoom_decay,
+                min_subject_px, target_subject_px, max_zoom,
+            )
             if placement is None:
-                continue
-            subject_px = int(_best_detection(candidate).bbox.height * placement.zoom)
-            if subject_px < min_subject_px:
                 continue
             chosen.append(candidate)
             placements.append(placement)
@@ -247,11 +272,12 @@ def _evaluate(
             break
         if candidate in chosen or _too_similar(candidate, chosen, phash_threshold):
             continue
-        placement = _place(candidate, canvas_w, canvas_h, padding_px, occupied, initial_zoom, min_zoom, zoom_decay)
+        placement = _place(
+            candidate, canvas_w, canvas_h, padding_px, occupied,
+            initial_zoom, min_zoom, zoom_decay,
+            min_subject_px, target_subject_px, max_zoom,
+        )
         if placement is None:
-            continue
-        subject_px = int(_best_detection(candidate).bbox.height * placement.zoom)
-        if subject_px < min_subject_px:
             continue
         chosen.append(candidate)
         placements.append(placement)
@@ -284,14 +310,20 @@ def optimize_auto_layout(
     min_zoom: float = 0.1,
     zoom_decay: float = 0.9,
     min_subject_px: int = 120,
+    target_subject_px: int = 240,
+    max_zoom: float = 1.5,
 ) -> LayoutEvaluation:
-    """Find the largest readable mosaic using ImageMosaicView-like packing."""
+    """Choose the largest readable mosaic with per-image automatic zoom.
+
+    Packing follows ImageMosaicView's 10 px scan. Each subject gets an ideal
+    display height first; the zoom is then reduced by 10%% until the crop fits.
+    This allows small face crops to zoom in while large full-body crops zoom out.
+    """
     requirements = requirements or MosaicRequirements()
     candidates = _candidate_order(records, requirements)
     limit = min(len(candidates), max(1, int(max_images)))
     best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [])
 
-    # Evaluate every count because requirement coverage can change as the target grows.
     for target in range(1, limit + 1):
         evaluation = _evaluate(
             candidates,
@@ -304,6 +336,8 @@ def optimize_auto_layout(
             min_zoom,
             zoom_decay,
             min_subject_px,
+            target_subject_px,
+            max_zoom,
         )
         if len(evaluation.placements) < target:
             break
@@ -327,7 +361,7 @@ def simulate_viewer_layout(
     zoom_decay: float = 0.9,
     min_subject_px: int = 0,
 ) -> list[LayoutPlacement]:
-    """Simulate ImageMosaicView loading order to compute the exported zooms."""
+    """Simulate ImageMosaicView loading order for export fallback."""
     ordered = sorted(
         records,
         key=lambda r: (
@@ -350,13 +384,12 @@ def simulate_viewer_layout(
             initial_zoom,
             min_zoom,
             zoom_decay,
+            min_subject_px,
+            target_subject_px=240,
+            max_zoom=1.5,
         )
         if placement is None:
             continue
-        if min_subject_px > 0:
-            subject_px = int(_best_detection(record).bbox.height * placement.zoom)
-            if subject_px < min_subject_px:
-                continue
         placements.append(placement)
         occupied.append((placement.x, placement.y, placement.width, placement.height))
     return placements
@@ -375,6 +408,7 @@ def apply_layout_selection(evaluation: LayoutEvaluation, all_records: list[Image
                 crop_bbox=placement.crop_bbox,
                 padding_px=0,
                 manual_override=record.manually_included,
+                zoom=placement.zoom,
             )
         elif record.status == ImageStatus.SELECTED:
             record.status = ImageStatus.REJECTED

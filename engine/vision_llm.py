@@ -27,10 +27,11 @@ except ImportError:
 
 _SYSTEM_PROMPT = """You are a photo-quality evaluator for a portrait mosaic.
 Analyze the supplied photograph itself. Respond with ONLY one valid JSON object.
-Do not use markdown fences or explanations."""
+Do not use markdown fences or explanations.
+Be conservative: use \"unknown\" whenever a visual attribute cannot be determined reliably."""
 
 _USER_PROMPT = """Analyze this photograph for a portrait mosaic.
-Return JSON with these exact fields:
+Return JSON with these exact top-level fields:
 {
   "has_person": boolean,
   "person_count": integer,
@@ -44,10 +45,30 @@ Return JSON with these exact fields:
   "image_quality": number 0..1,
   "subject_quality": number 0..1,
   "mosaic_value": number 0..1,
+  "visual_tags": {
+    "framing": "face_only" | "head_shoulders" | "upper_body" | "half_body" | "full_body" | "unknown",
+    "orientation": "front" | "three_quarter_front" | "side" | "three_quarter_back" | "back" | "unknown",
+    "gender_presentation": "male" | "female" | "unknown",
+    "content_rating": "safe" | "suggestive" | "explicit" | "unknown",
+    "pose": "standing" | "seated" | "lying" | "walking" | "other" | "unknown",
+    "looking_at_camera": boolean
+  },
   "reject": boolean,
   "reject_reason": string,
   "notes": string
 }
+
+Definitions:
+- face_only: head/face is the dominant visible subject; shoulders/body are mostly outside the crop.
+- head_shoulders: head and shoulders are visible, but not substantial torso/legs.
+- upper_body: head plus substantial torso/arms, but not most of the legs.
+- half_body: roughly waist-up or similar partial-body framing.
+- full_body: essentially the complete person is visible, including both feet when the image allows it.
+- orientation is the person's dominant body/face direction.
+- gender_presentation is only a visual presentation category, not a claim about identity; use unknown when unclear.
+- content_rating: safe = non-sexual; suggestive = sexualized/suggestive but not explicit; explicit = explicit sexual content; unknown = cannot determine.
+- looking_at_camera should be true only when the main person's gaze is reasonably directed at the camera.
+
 Use only: no_person, blurry, low_quality, occluded, person_too_small, or empty for reject_reason."""
 
 
@@ -103,7 +124,6 @@ def _build_chat_handler(handler_name: str, mmproj_path: str):
     except Exception:
         params = {}
 
-    # Gemma4ChatHandler and older vision handlers use clip_model_path.
     if "clip_model_path" in params:
         return handler_cls(clip_model_path=mmproj_path)
     if "mmproj_path" in params:
@@ -159,6 +179,28 @@ def _strict_analysis(data: dict) -> dict:
         if not math.isfinite(value) or not 0.0 <= value <= 1.0:
             raise ValueError(f"{field} must be in 0..1")
         data[field] = value
+
+    tags = data.get("visual_tags")
+    if not isinstance(tags, dict):
+        raise ValueError("visual_tags must be an object")
+
+    enum_fields = {
+        "framing": {"face_only", "head_shoulders", "upper_body", "half_body", "full_body", "unknown"},
+        "orientation": {"front", "three_quarter_front", "side", "three_quarter_back", "back", "unknown"},
+        "gender_presentation": {"male", "female", "unknown"},
+        "content_rating": {"safe", "suggestive", "explicit", "unknown"},
+        "pose": {"standing", "seated", "lying", "walking", "other", "unknown"},
+    }
+    normalized_tags: dict[str, object] = {}
+    for field_name, allowed_values in enum_fields.items():
+        value = str(tags.get(field_name, "unknown"))
+        normalized_tags[field_name] = value if value in allowed_values else "unknown"
+
+    looking_at_camera = tags.get("looking_at_camera", False)
+    if not isinstance(looking_at_camera, bool):
+        raise ValueError("visual_tags.looking_at_camera must be boolean")
+    normalized_tags["looking_at_camera"] = looking_at_camera
+    data["visual_tags"] = normalized_tags
 
     reason = str(data.get("reject_reason", "") or "")
     allowed = {"", "no_person", "blurry", "low_quality", "occluded", "person_too_small"}
@@ -356,7 +398,7 @@ class VisionLLMEngine:
             self._unload()
             self._capabilities = None
 
-    def analyze_image(self, image_path: str, max_tokens: int = 600, temperature: float = 0.1) -> ImageAnalysis:
+    def analyze_image(self, image_path: str, max_tokens: int = 800, temperature: float = 0.1) -> ImageAnalysis:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
 
@@ -380,7 +422,7 @@ class VisionLLMEngine:
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
         return _parse_analysis(text, self._model_name)
 
-    def analyze_image_raw(self, image_path: str, max_tokens: int = 600, temperature: float = 0.1):
+    def analyze_image_raw(self, image_path: str, max_tokens: int = 800, temperature: float = 0.1):
         analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature)
         return analysis.raw_response, analysis
 

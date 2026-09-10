@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 
+from engine.layout_optimizer import simulate_viewer_layout
 from engine.models import ImageRecord, ImageStatus
 from vision.cropper import compute_crop_box
 
@@ -40,42 +41,49 @@ def export_project(
     canvas_size: tuple[int, int],
     padding_px: int,
 ) -> Path:
-    """
-    Export ONLY the project JSON consumed by ImageMosaicView.
+    """Export only the JSON consumed by ImageMosaicView.
 
-    ImageMosaicView does the crop dynamically when it loads the project. The
-    builder therefore must not copy images, create crop files, or create an
-    auxiliary project format. It only records the original image path,
-    relative crop coordinates, zoom, and canvas size.
+    The builder never writes crop images. It stores original-image filenames and
+    crop coordinates; ImageMosaicView reopens the originals and renders crops
+    dynamically. The zoom values are computed with the viewer's packing rules.
     """
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-
     canvas_w, canvas_h = map(int, canvas_size)
-    viewer_entries: list[dict] = []
 
     selected_records = [
-        r for r in records
-        if r.status == ImageStatus.SELECTED and r.detections
+        record for record in records
+        if record.status == ImageStatus.SELECTED and record.detections
     ]
+    layout = simulate_viewer_layout(
+        selected_records,
+        canvas_size=(canvas_w, canvas_h),
+        padding_px=padding_px,
+        initial_zoom=0.5,
+        min_zoom=0.1,
+        zoom_decay=0.9,
+        min_subject_px=0,
+    )
+    placements = {placement.record.path: placement for placement in layout}
+    ordered_records = sorted(
+        selected_records,
+        key=lambda record: (
+            record.selection.slot_index if record.selection else 10**9,
+            record.filename.lower(),
+        ),
+    )
 
-    for record in selected_records:
-        detection = max(
-            record.detections,
-            key=lambda d: (d.is_main, d.confidence, d.relative_size),
-        )
-        crop = compute_crop_box(
-            detection.bbox,
-            record.width,
-            record.height,
-            padding_px,
-        )
-
+    viewer_entries: list[dict] = []
+    for record in ordered_records:
+        placement = placements.get(record.path)
+        if placement is None:
+            continue
+        crop = placement.crop_bbox
         viewer_entries.append({
             "type": "body",
             "filename": _relative_source_filename(Path(record.path), root),
             "coords": _relative_coords(crop, record.width, record.height),
-            "zoom": 0.5,
+            "zoom": placement.zoom,
             "canvas_size": [canvas_w, canvas_h],
         })
 

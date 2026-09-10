@@ -1,6 +1,7 @@
 """Main PySide6 window for AI Mosaic Builder."""
 from __future__ import annotations
 
+import copy
 import logging
 from pathlib import Path
 
@@ -9,9 +10,7 @@ from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QSplitter, QVBox
 
 from engine.cache import get_cache, source_cache_dir
 from engine.image_analyzer import build_record, discover_images
-from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout, optimize_fixed_layout
 from engine.models import ImageRecord, ImageStatus
-from engine.project_export import export_project
 from engine.ranking import rank_records
 from engine.session import save_session
 from engine.storage import load_settings, save_settings
@@ -20,7 +19,7 @@ from ui.image_detail import ImageDetailPanel
 from ui.image_grid import ImageGrid
 from ui.settings import SettingsPanel
 from ui.styles import DARK_STYLESHEET
-from ui.workers import AnalysisWorker, ModelLoaderWorker, PostProcessWorker
+from ui.workers import AnalysisWorker, GenerateMosaicWorker, ModelLoaderWorker, PostProcessWorker
 
 logger = logging.getLogger("ui.main")
 
@@ -42,6 +41,7 @@ class MainWindow(QMainWindow):
         self._loader = None
         self._analysis_worker = None
         self._post_worker = None
+        self._generate_worker = None
 
         self._build_ui()
         self._connect()
@@ -90,13 +90,18 @@ class MainWindow(QMainWindow):
         self.details.exclude_toggled.connect(self._toggle_exclude)
 
     def _settings_changed(self, settings) -> None:
-        self._settings = settings
+        if self._generate_worker:
+            # Generation uses a snapshot of settings captured at start. Save new
+            # settings for the next generation, but don't mutate the active job.
+            self._settings = settings
+        else:
+            self._settings = settings
         if settings.last_source_folder:
             self._cache = self._get_cache_for_source(settings.last_source_folder)
         save_settings(settings)
 
     def _start_analysis(self) -> None:
-        if self._loader or self._analysis_worker or self._post_worker:
+        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker:
             return
         folder = Path(self._settings.last_source_folder)
         model = Path(self._settings.model_path)
@@ -203,8 +208,13 @@ class MainWindow(QMainWindow):
             self._summary.setText("Stopping after the current image…")
         if self._post_worker:
             self._post_worker.cancel()
+        if self._generate_worker:
+            self._generate_worker.cancel()
+            self._summary.setText("Stopping mosaic generation…")
 
     def _toggle_include(self, record: ImageRecord) -> None:
+        if self._generate_worker:
+            return
         record.manually_included = not record.manually_included
         if record.manually_included:
             record.manually_excluded = False
@@ -212,6 +222,8 @@ class MainWindow(QMainWindow):
         self.details.show_record(record)
 
     def _toggle_exclude(self, record: ImageRecord) -> None:
+        if self._generate_worker:
+            return
         record.manually_excluded = not record.manually_excluded
         if record.manually_excluded:
             record.manually_included = False
@@ -219,7 +231,7 @@ class MainWindow(QMainWindow):
         self.details.show_record(record)
 
     def _rerank_without_detection(self) -> None:
-        if not self._records:
+        if not self._records or self._generate_worker:
             return
         self._records = rank_records(
             self._records,
@@ -233,84 +245,56 @@ class MainWindow(QMainWindow):
         self._update_summary()
 
     def _generate_project(self) -> None:
+        if self._generate_worker or self._loader or self._analysis_worker or self._post_worker:
+            return
         candidates = self._layout_candidates()
         if not candidates:
             QMessageBox.warning(self, "Generate Mosaic", "No valid mosaic candidates are available. Run Analyze first.")
             return
 
-        source_folder = Path(self._settings.last_source_folder)
-        self._summary.setText("Preparing mosaic recipe and optimizing canvas layout…")
-        try:
-            # Re-rank immediately before generation so changes to preferences or
-            # requirements made after Analyze are reflected without re-analyzing.
-            ranked = rank_records(
-                self._records,
-                self._settings.ranking_weights,
-                self._settings.mosaic_requirements,
-            )
-            self._records = ranked
-            candidates = self._layout_candidates()
-            requirements = self._settings.mosaic_requirements
-            target = int(self._settings.target_images)
+        # Snapshot settings so changing the UI during a generation cannot mutate
+        # the active optimization job.
+        generation_settings = copy.deepcopy(self._settings)
+        worker = GenerateMosaicWorker(list(self._records), generation_settings)
+        worker.signals.progress.connect(lambda text: self._summary.setText(text))
+        worker.signals.finished.connect(self._on_generate_finished)
+        worker.signals.error.connect(self._on_generate_error)
+        self._generate_worker = worker
+        self.settings_panel.set_generate_enabled(False)
+        self._summary.setText("Preparing mosaic recipe…")
+        self._pool.start(worker)
 
-            if target == 0:
-                layout = optimize_auto_layout(
-                    candidates,
-                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
-                    padding_px=self._settings.padding_px,
-                    requirements=requirements,
-                    phash_threshold=self._settings.phash_threshold,
-                    max_images=100,
-                    min_zoom=0.1,
-                    zoom_decay=0.9,
-                    min_subject_px=160,
-                    target_subject_px=260,
-                    max_zoom=3.0,
-                )
-                mode = "AUTO"
-            else:
-                layout = optimize_fixed_layout(
-                    candidates,
-                    target=target,
-                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
-                    padding_px=self._settings.padding_px,
-                    requirements=requirements,
-                    phash_threshold=self._settings.phash_threshold,
-                    min_subject_px=160,
-                    target_subject_px=260,
-                    max_zoom=3.0,
-                )
-                mode = f"FIXED={target}"
+    def _on_generate_finished(
+        self,
+        records: list[ImageRecord],
+        path: str,
+        mode: str,
+        image_count: int,
+        canvas_fill: float,
+        average_zoom: float,
+    ) -> None:
+        self._generate_worker = None
+        self._records = records
+        self.grid.load_records(records)
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self._update_summary()
+        QMessageBox.information(
+            self,
+            "Project generated",
+            f"Saved to:\n{path}\n\nMode: {mode}\nImages: {image_count}\nCanvas fill: {canvas_fill:.1%}\nAverage zoom: {average_zoom:.3f}",
+        )
 
-            if not layout.placements:
-                QMessageBox.warning(self, "Generate Mosaic", "No layout could fit the requested requirements and canvas.")
-                self._update_summary()
-                return
-
-            apply_layout_selection(layout, self._records)
-            path = export_project(
-                str(source_folder),
-                self._selected_records(),
-                (self._settings.canvas_width, self._settings.canvas_height),
-                self._settings.padding_px,
-            )
-            if self._settings.last_source_folder:
-                save_session(self._settings.last_source_folder, self._records)
-            self.grid.load_records(self._records)
-            self._update_summary()
-            QMessageBox.information(
-                self,
-                "Project generated",
-                f"Saved to:\n{path}\n\nMode: {mode}\nImages: {len(layout.placements)}\nCanvas fill: {layout.canvas_fill_ratio:.1%}\nAverage zoom: {layout.average_zoom:.3f}",
-            )
-        except Exception as exc:
-            self._update_summary()
-            QMessageBox.critical(self, "Generate failed", str(exc))
+    def _on_generate_error(self, message: str) -> None:
+        self._generate_worker = None
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self._update_summary()
+        QMessageBox.critical(self, "Generate failed", message)
 
     def _on_worker_error(self, message: str) -> None:
         self._loader = None
         self._analysis_worker = None
         self._post_worker = None
+        self._generate_worker = None
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(False)
         self._summary.setText("Error")

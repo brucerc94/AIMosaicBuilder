@@ -62,7 +62,12 @@ def _detect_gpu_info() -> Optional[dict]:
         parts = [p.strip() for p in result.stdout.splitlines()[0].split(",")]
         if len(parts) < 4:
             return None
-        return {"name": parts[0], "mem_total": int(float(parts[1])), "mem_free": int(float(parts[2])), "compute_cap": parts[3]}
+        return {
+            "name": parts[0],
+            "mem_total": int(float(parts[1])),
+            "mem_free": int(float(parts[2])),
+            "compute_cap": parts[3],
+        }
     except Exception:
         return None
 
@@ -87,16 +92,22 @@ def _find_handler_class(name: str):
 def _build_chat_handler(handler_name: str, mmproj_path: str):
     handler_cls = _find_handler_class(handler_name)
     if handler_cls is None:
-        raise RuntimeError(f"Vision handler {handler_name!r} is not available")
+        raise RuntimeError(
+            f"The installed llama-cpp-python build does not provide {handler_name}. "
+            "Gemma-4 requires Gemma4ChatHandler; upgrade llama-cpp-python to a build that supports Gemma-4."
+        )
+
     import inspect
     try:
         params = inspect.signature(handler_cls).parameters
     except Exception:
         params = {}
-    if "mmproj_path" in params:
-        return handler_cls(mmproj_path=mmproj_path)
+
+    # Gemma4ChatHandler and older vision handlers use clip_model_path.
     if "clip_model_path" in params:
         return handler_cls(clip_model_path=mmproj_path)
+    if "mmproj_path" in params:
+        return handler_cls(mmproj_path=mmproj_path)
     try:
         return handler_cls(mmproj_path)
     except TypeError:
@@ -124,25 +135,36 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def _strict_analysis(data: dict) -> dict:
-    required_bools = ("has_person", "main_subject_is_person", "face_visible", "body_visible", "occluded", "reject")
-    required_numbers = ("person_visibility", "blur", "composition", "image_quality", "subject_quality", "mosaic_value")
+    required_bools = (
+        "has_person", "main_subject_is_person", "face_visible",
+        "body_visible", "occluded", "reject",
+    )
+    required_numbers = (
+        "person_visibility", "blur", "composition", "image_quality",
+        "subject_quality", "mosaic_value",
+    )
     for field in required_bools:
         if not isinstance(data.get(field), bool):
             raise ValueError(f"{field} must be boolean")
+
     try:
         person_count = int(data.get("person_count"))
     except (TypeError, ValueError) as exc:
         raise ValueError("person_count must be integer") from exc
     if not 0 <= person_count <= 99:
         raise ValueError("person_count out of range")
+
     for field in required_numbers:
         value = float(data.get(field))
         if not math.isfinite(value) or not 0.0 <= value <= 1.0:
             raise ValueError(f"{field} must be in 0..1")
         data[field] = value
+
     reason = str(data.get("reject_reason", "") or "")
-    if reason not in {"", "no_person", "blurry", "low_quality", "occluded", "person_too_small"}:
+    allowed = {"", "no_person", "blurry", "low_quality", "occluded", "person_too_small"}
+    if reason not in allowed:
         reason = ""
+
     data["person_count"] = person_count
     data["reject_reason"] = reason
     data["notes"] = str(data.get("notes", "") or "")[:1000]
@@ -182,10 +204,13 @@ def _encode_image_b64(path: str, max_dimension: int = 1600) -> str:
 def _build_messages(img_b64: str) -> list[dict]:
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {"role": "user", "content": [
-            {"type": "image_url", "image_url": {"url": img_b64}},
-            {"type": "text", "text": _USER_PROMPT},
-        ]},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": img_b64}},
+                {"type": "text", "text": _USER_PROMPT},
+            ],
+        },
     ]
 
 
@@ -206,8 +231,11 @@ class VisionLLMEngine:
     @property
     def capabilities(self) -> dict:
         if self._capabilities is None:
-            self._capabilities = llama_features.detect_vision_capabilities()
+            self._capabilities = llama_features.detect_vision_capabilities(self._model_path)
         return self._capabilities
+
+    def capabilities_for(self, model_path: str) -> dict:
+        return llama_features.detect_vision_capabilities(model_path)
 
     @property
     def model_loaded(self) -> bool:
@@ -245,9 +273,22 @@ class VisionLLMEngine:
         with self._lock:
             if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path:
                 return
+
             self._unload()
+            self._capabilities = llama_features.detect_vision_capabilities(model_path)
             self.log_capabilities()
-            caps = self.capabilities
+            caps = self._capabilities
+
+            model_family = caps.get("model_family", "unknown")
+            handler_name = caps.get("handler_class", "")
+            if model_family == "gemma4" and handler_name != "Gemma4ChatHandler":
+                raise RuntimeError(
+                    "Gemma-4 was detected but Gemma4ChatHandler is unavailable in the installed "
+                    f"llama-cpp-python ({caps.get('version', 'unknown')}). "
+                    "Do not use Qwen25VLChatHandler for Gemma-4; install a llama-cpp-python build "
+                    "with Gemma4ChatHandler support."
+                )
+
             extra: dict = {}
             if caps["flash_attn_param"]:
                 extra["flash_attn"] = True
@@ -257,24 +298,30 @@ class VisionLLMEngine:
             if n_gpu_layers != 0:
                 gpu = _detect_gpu_info()
                 if gpu:
-                    logger.info("[vision] GPU=%s | VRAM=%s/%s MiB | CC=%s", gpu["name"], gpu["mem_free"], gpu["mem_total"], gpu["compute_cap"])
+                    logger.info(
+                        "[vision] GPU=%s | VRAM=%s/%s MiB | CC=%s",
+                        gpu["name"], gpu["mem_free"], gpu["mem_total"], gpu["compute_cap"],
+                    )
                     if _needs_mmq_fallback(gpu["name"]):
                         os.environ["GGML_CUDA_FORCE_MMQ"] = "1"
                         if caps["flash_attn_param"]:
                             extra["flash_attn"] = False
 
             mechanism = caps["vision_mechanism"]
-            if mechanism == "mmproj_path":
+            if mechanism == "chat_handler":
+                extra["chat_handler"] = _build_chat_handler(handler_name, mmproj_path)
+            elif mechanism == "mmproj_path":
                 extra["mmproj_path"] = mmproj_path
-            elif mechanism == "chat_handler":
-                extra["chat_handler"] = _build_chat_handler(caps["handler_class"], mmproj_path)
             elif mechanism == "clip_model_path":
                 extra["clip_model_path"] = mmproj_path
             else:
-                raise RuntimeError("The installed llama-cpp-python build has no usable multimodal vision mechanism.")
+                raise RuntimeError(
+                    f"No usable multimodal vision mechanism for model family {model_family!r}."
+                )
 
             if progress_callback:
                 progress_callback(f"Loading {Path(model_path).name}…")
+
             kwargs = {
                 "model_path": model_path,
                 "n_ctx": n_ctx,
@@ -307,10 +354,12 @@ class VisionLLMEngine:
     def unload(self) -> None:
         with self._lock:
             self._unload()
+            self._capabilities = None
 
     def analyze_image(self, image_path: str, max_tokens: int = 600, temperature: float = 0.1) -> ImageAnalysis:
         if not self.vision_ready:
-            raise RuntimeError("Vision model is not loaded with a valid mmproj.")
+            raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
+
         img_b64 = _encode_image_b64(image_path)
         kwargs = {
             "messages": _build_messages(img_b64),
@@ -322,6 +371,7 @@ class VisionLLMEngine:
         }
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
+
         with self._lock:
             try:
                 response = self._model.create_chat_completion(**kwargs)

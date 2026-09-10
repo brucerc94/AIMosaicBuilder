@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import inspect
 import logging
+from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger("llama_features")
@@ -46,26 +47,58 @@ def supports_chat_completion_param(param_name: str) -> bool:
     try:
         from llama_cpp import Llama
         params = inspect.signature(Llama.create_chat_completion).parameters.values()
-        return any(
-            p.kind is inspect.Parameter.VAR_KEYWORD or p.name == param_name
-            for p in params
-        )
+        return any(p.kind is inspect.Parameter.VAR_KEYWORD or p.name == param_name for p in params)
     except Exception:
         return False
 
 
-def _find_handler(module, candidates: list[str]) -> str:
-    for name in candidates:
-        if hasattr(module, name):
-            return name
-    return ""
+def infer_model_family(model_path: str = "") -> str:
+    """Infer a model family from its GGUF filename."""
+    name = Path(model_path).name.lower().replace("_", "-")
+    if "gemma-4" in name or "gemma4" in name:
+        return "gemma4"
+    if "gemma-3" in name or "gemma3" in name:
+        return "gemma3"
+    if "qwen2.5-vl" in name or "qwen-2.5-vl" in name:
+        return "qwen25vl"
+    if "qwen2-vl" in name or "qwen-2-vl" in name:
+        return "qwen2vl"
+    if "qwen3-vl" in name or "qwen-3-vl" in name:
+        return "qwen3vl"
+    return "unknown"
 
 
-def detect_vision_capabilities() -> dict:
+def _handler_candidates_for_family(family: str) -> list[str]:
+    return {
+        "gemma4": ["Gemma4ChatHandler"],
+        "gemma3": ["Gemma3ChatHandler"],
+        "qwen25vl": ["Qwen25VLChatHandler"],
+        "qwen2vl": ["Qwen2VLChatHandler"],
+        "qwen3vl": ["Qwen3VLChatHandler"],
+        "unknown": ["GenericMTMDChatHandler", "MTMDChatHandler"],
+    }.get(family, ["GenericMTMDChatHandler", "MTMDChatHandler"])
+
+
+def _find_model_handler(model_path: str) -> tuple[str, str]:
+    family = infer_model_family(model_path)
+    candidates = _handler_candidates_for_family(family)
+    for module_name in ("llama_cpp.llama_multimodal", "llama_cpp.llama_chat_format"):
+        try:
+            module = __import__(module_name, fromlist=candidates)
+        except Exception:
+            continue
+        for name in candidates:
+            if hasattr(module, name):
+                return family, name
+    return family, ""
+
+
+def detect_vision_capabilities(model_path: str = "") -> dict:
     caps = {
         "llama_cpp_available": False,
         "version": "unknown",
         "llama_class_ok": False,
+        "model_family": infer_model_family(model_path),
         "mmproj_path_param": False,
         "chat_handler_param": False,
         "clip_model_path_param": False,
@@ -110,39 +143,30 @@ def detect_vision_capabilities() -> dict:
     except Exception as exc:
         logger.warning("Llama introspection failed: %s", exc)
 
-    candidates = [
-        "Qwen25VLChatHandler",
-        "Qwen2VLChatHandler",
-        "Gemma3ChatHandler",
-        "Llava16ChatHandler",
-        "Llava15ChatHandler",
-        "MoondreamChatHandler",
-        "NanoLlavaChatHandler",
-        "MiniCPMv26ChatHandler",
-        "GenericMTMDChatHandler",
-    ]
+    family, handler = _find_model_handler(model_path)
+    caps["model_family"] = family
+    caps["handler_class"] = handler
 
     try:
-        import llama_cpp.llama_multimodal as lmm  # type: ignore
+        import llama_cpp.llama_multimodal  # type: ignore  # noqa: F401
         caps["multimodal_module"] = True
-        caps["handler_class"] = _find_handler(lmm, candidates)
+    except Exception:
+        pass
+    try:
+        import llama_cpp.llama_chat_format  # type: ignore  # noqa: F401
+        caps["chat_format_module"] = True
     except Exception:
         pass
 
-    if not caps["handler_class"]:
-        try:
-            import llama_cpp.llama_chat_format as lcf  # type: ignore
-            caps["chat_format_module"] = True
-            caps["handler_class"] = _find_handler(lcf, candidates)
-        except Exception:
-            pass
-
-    if caps["mmproj_path_param"]:
-        caps["vision_mechanism"] = "mmproj_path"
-    elif caps["chat_handler_param"] and caps["handler_class"]:
+    if caps["chat_handler_param"] and handler:
         caps["vision_mechanism"] = "chat_handler"
-    elif caps["clip_model_path_param"] and caps["handler_class"]:
+    elif caps["mmproj_path_param"]:
+        caps["vision_mechanism"] = "mmproj_path"
+    elif caps["clip_model_path_param"] and handler:
         caps["vision_mechanism"] = "clip_model_path"
+
+    if family != "unknown" and not handler:
+        logger.warning("Model family %s requires its specific vision handler, but none was found.", family)
 
     return caps
 

@@ -4,12 +4,14 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 from PySide6.QtCore import QThreadPool
+from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
 from engine.cache import get_cache
 from engine.image_analyzer import build_record, discover_images
 from engine.models import ImageRecord, ImageStatus
+from engine.project_export import export_project
+from engine.session import save_session
 from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
 from ui.image_detail import ImageDetailPanel
@@ -17,8 +19,6 @@ from ui.image_grid import ImageGrid
 from ui.settings import SettingsPanel
 from ui.styles import DARK_STYLESHEET
 from ui.workers import AnalysisWorker, ModelLoaderWorker, PostProcessWorker
-from engine.project_export import export_project
-from engine.session import save_session
 
 logger = logging.getLogger("ui.main")
 
@@ -141,7 +141,9 @@ class MainWindow(QMainWindow):
         self.grid.load_records(records)
         self._summary.setText("Detecting people and ranking…")
         worker = PostProcessWorker(records, self._settings)
-        worker.signals.progress.connect(lambda done, total, name: self._summary.setText(f"Detecting people {done}/{total} — {name}"))
+        worker.signals.progress.connect(
+            lambda done, total, name: self._summary.setText(f"Detecting people {done}/{total} — {name}")
+        )
         worker.signals.finished.connect(self._on_post_finished)
         worker.signals.error.connect(self._on_worker_error)
         self._post_worker = worker
@@ -191,7 +193,9 @@ class MainWindow(QMainWindow):
         if not self._records or self._analysis_worker or self._post_worker:
             return
         worker = PostProcessWorker(self._records, self._settings)
-        worker.signals.progress.connect(lambda done, total, name: self._summary.setText(f"Updating selection {done}/{total} — {name}"))
+        worker.signals.progress.connect(
+            lambda done, total, name: self._summary.setText(f"Updating selection {done}/{total} — {name}")
+        )
         worker.signals.finished.connect(self._on_post_finished)
         worker.signals.error.connect(self._on_worker_error)
         self._post_worker = worker
@@ -202,10 +206,14 @@ class MainWindow(QMainWindow):
         selected = self._selected_records()
         if not selected:
             return
-        output_dir = Path(self._settings.last_source_folder) / "_AI_Mosaic_Output"
+
+        # ImageMosaicView resolves project paths relative to the folder that
+        # contains the JSON. Save the project directly in the selected source
+        # folder so the user can open that folder as the project directory.
+        source_folder = Path(self._settings.last_source_folder)
         try:
             path = export_project(
-                str(output_dir),
+                str(source_folder),
                 selected,
                 (self._settings.canvas_width, self._settings.canvas_height),
                 self._settings.padding_px,

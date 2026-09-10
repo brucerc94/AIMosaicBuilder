@@ -2,12 +2,11 @@
 from __future__ import annotations
 
 import json
-import shutil
-from datetime import datetime
+import os
 from pathlib import Path
 
 from engine.models import ImageRecord, ImageStatus
-from vision.cropper import compute_crop_box, save_crop
+from vision.cropper import compute_crop_box
 
 
 def _relative_coords(box, width: int, height: int) -> list[float]:
@@ -22,6 +21,19 @@ def _relative_coords(box, width: int, height: int) -> list[float]:
     ]
 
 
+def _relative_source_filename(source: Path, project_root: Path) -> str:
+    """Return the original image path relative to the folder containing mosaic.json."""
+    source_abs = Path(os.path.abspath(source))
+    root_abs = Path(os.path.abspath(project_root))
+    try:
+        relative = source_abs.relative_to(root_abs)
+    except ValueError as exc:
+        raise ValueError(
+            f"Selected image is outside the source/project folder: {source_abs}"
+        ) from exc
+    return relative.as_posix()
+
+
 def export_project(
     output_dir: str,
     records: list[ImageRecord],
@@ -29,29 +41,25 @@ def export_project(
     padding_px: int,
 ) -> Path:
     """
-    Export an ImageMosaicView-compatible project.
+    Export ONLY the project JSON consumed by ImageMosaicView.
 
-    ImageMosaicView's current project loader expects the JSON root to be a
-    list of entry objects. Builder-specific metadata is written separately so
-    the viewer JSON contains only the fields it knows how to load.
+    ImageMosaicView does the crop dynamically when it loads the project. The
+    builder therefore must not copy images, create crop files, or create an
+    auxiliary project format. It only records the original image path,
+    relative crop coordinates, zoom, and canvas size.
     """
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
-    selected_dir = root / "selected"
-    crops_dir = root / "crops"
-    selected_dir.mkdir(exist_ok=True)
-    crops_dir.mkdir(exist_ok=True)
 
     canvas_w, canvas_h = map(int, canvas_size)
     viewer_entries: list[dict] = []
-    metadata_entries: list[dict] = []
 
     selected_records = [
         r for r in records
         if r.status == ImageStatus.SELECTED and r.detections
     ]
 
-    for slot, record in enumerate(selected_records):
+    for record in selected_records:
         detection = max(
             record.detections,
             key=lambda d: (d.is_main, d.confidence, d.relative_size),
@@ -62,70 +70,18 @@ def export_project(
             record.height,
             padding_px,
         )
-        relative_coords = _relative_coords(crop, record.width, record.height)
 
-        source = Path(record.path)
-        selected_name = f"{slot + 1:03d}_{source.name}"
-        selected_path = selected_dir / selected_name
-        shutil.copy2(source, selected_path)
-
-        crop_name = f"{slot + 1:03d}_{source.stem}_crop.jpg"
-        crop_path = crops_dir / crop_name
-        if not save_crop(
-            record.path,
-            detection.bbox,
-            str(crop_path),
-            padding_px=padding_px,
-            quality=92,
-        ):
-            raise RuntimeError(f"Could not create crop for {record.path}")
-
-        # EXACT ImageMosaicView entry contract.
         viewer_entries.append({
             "type": "body",
-            "filename": (Path("selected") / selected_name).as_posix(),
-            "coords": relative_coords,
+            "filename": _relative_source_filename(Path(record.path), root),
+            "coords": _relative_coords(crop, record.width, record.height),
             "zoom": 0.5,
             "canvas_size": [canvas_w, canvas_h],
         })
 
-        metadata_entries.append({
-            "slot": slot,
-            "source_filename": record.filename,
-            "selected_file": (Path("selected") / selected_name).as_posix(),
-            "crop_file": (Path("crops") / crop_name).as_posix(),
-            "score": record.ranking.final_score if record.ranking else 0.0,
-            "rank": record.ranking.rank if record.ranking else 0,
-            "person_bbox": detection.bbox.to_dict(),
-            "crop_bbox": crop.to_dict(),
-            "coords": relative_coords,
-            "padding_px": padding_px,
-        })
-
-    viewer_json = json.dumps(viewer_entries, indent=2, ensure_ascii=False)
-
-    # Primary file to open with ImageMosaicView.
-    mosaic_path = root / "mosaic.json"
-    mosaic_path.write_text(viewer_json, encoding="utf-8")
-
-    # Backward-compatible alias for older AI Mosaic Builder exports.
-    # It intentionally contains the SAME viewer-compatible list, not the old
-    # {"entries": [...]} wrapper that caused the ImageMosaicView load error.
-    legacy_path = root / "ai_mosaic_project.json"
-    legacy_path.write_text(viewer_json, encoding="utf-8")
-
-    # Builder-specific metadata is kept separate from the viewer project.
-    metadata_payload = {
-        "format": "ai-mosaic-builder",
-        "version": 2,
-        "created_at": datetime.now().isoformat(),
-        "canvas_size": [canvas_w, canvas_h],
-        "entries": metadata_entries,
-    }
-    metadata_path = root / "ai_mosaic_metadata.json"
-    metadata_path.write_text(
-        json.dumps(metadata_payload, indent=2, ensure_ascii=False),
+    path = root / "mosaic.json"
+    path.write_text(
+        json.dumps(viewer_entries, indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
-
-    return mosaic_path
+    return path

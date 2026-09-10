@@ -401,7 +401,7 @@ class AppSettings:
     model_path: str = ""
     mmproj_path: str = ""
     cache_directory: str = ""
-    n_ctx: int = 4096
+    n_ctx: int = 2048
     n_gpu_layers: int = 0
     n_threads: int = 4
     n_threads_batch: int = 0
@@ -454,7 +454,7 @@ class AppSettings:
             model_path=str(d.get("model_path", "")),
             mmproj_path=str(d.get("mmproj_path", "")),
             cache_directory=str(d.get("cache_directory", "")),
-            n_ctx=int(d.get("n_ctx", 4096)),
+            n_ctx=int(d.get("n_ctx", 2048)),
             n_gpu_layers=int(d.get("n_gpu_layers", 0)),
             n_threads=int(d.get("n_threads", 4)),
             n_threads_batch=int(d.get("n_threads_batch", 0)),

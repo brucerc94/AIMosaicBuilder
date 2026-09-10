@@ -28,7 +28,7 @@ except ImportError:
 
 _SYSTEM_PROMPT = """You are a photo evaluator for a portrait mosaic.
 Analyze the supplied photograph and return ONLY one valid JSON object.
-Use unknown when a visual attribute cannot be determined reliably."""
+Do not explain anything. Use unknown for uncertain visual attributes."""
 
 _USER_PROMPT = """Analyze this photo for a portrait mosaic. Return ONLY JSON.
 Required fields:
@@ -54,11 +54,9 @@ Required fields:
     "looking_at_camera": boolean
   },
   "reject": boolean,
-  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty",
-  "notes": string
+  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty"
 }
-Be conservative. gender_presentation is visual presentation only; use unknown when unclear.
-"""
+Be conservative. gender_presentation is visual presentation only."""
 
 
 def _detect_gpu_info() -> Optional[dict]:
@@ -342,18 +340,26 @@ class VisionLLMEngine:
             self._unload()
             self._capabilities = None
 
-    def analyze_image(self, image_path: str, max_tokens: int = 256, temperature: float = 0.1) -> ImageAnalysis:
+    def analyze_image(self, image_path: str, max_tokens: int = 192, temperature: float = 0.0) -> ImageAnalysis:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
         image_name = Path(image_path).name
         total_started = time.perf_counter()
         preprocess_started = time.perf_counter()
         img_b64 = _encode_image_b64(image_path)
-        kwargs = {"messages": _build_messages(img_b64), "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.9, "top_k": 40, "stream": False}
+        kwargs = {
+            "messages": _build_messages(img_b64),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": 0.9,
+            "top_k": 40,
+            "stream": False,
+        }
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
         preprocess_elapsed = time.perf_counter() - preprocess_started
-        logger.info("[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | instance_id=%s", image_name, self._model_name, self._model_ctx, hex(id(self._model)))
+        logger.info("[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | temperature=%.2f | instance_id=%s", image_name, self._model_name, self._model_ctx, max_tokens, temperature, hex(id(self._model)))
+
         inference_started = time.perf_counter()
         with self._lock:
             try:
@@ -364,12 +370,26 @@ class VisionLLMEngine:
                 logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s", image_name, inference_elapsed, time.perf_counter() - total_started, exc)
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
         inference_elapsed = time.perf_counter() - inference_started
+
+        parse_started = time.perf_counter()
+        analysis = _parse_analysis(text, self._model_name)
+        parse_elapsed = time.perf_counter() - parse_started
         total_elapsed = time.perf_counter() - total_started
         usage = response.get("usage") or {}
-        logger.info("[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | inference=%.2fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s", image_name, preprocess_elapsed, inference_elapsed, total_elapsed, usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
-        return _parse_analysis(text, self._model_name)
+        logger.info(
+            "[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s | response_chars=%d",
+            image_name,
+            preprocess_elapsed,
+            inference_elapsed,
+            parse_elapsed,
+            total_elapsed,
+            usage.get("prompt_tokens", "?"),
+            usage.get("completion_tokens", "?"),
+            len(text),
+        )
+        return analysis
 
-    def analyze_image_raw(self, image_path: str, max_tokens: int = 256, temperature: float = 0.1):
+    def analyze_image_raw(self, image_path: str, max_tokens: int = 192, temperature: float = 0.0):
         analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature)
         return analysis.raw_response, analysis
 

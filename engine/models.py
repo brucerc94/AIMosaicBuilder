@@ -44,6 +44,74 @@ class SortOrder(str, Enum):
 
 
 @dataclass
+class MosaicRequirements:
+    """User constraints and soft preferences for the final mosaic."""
+
+    # Hard minimum composition counts.
+    min_face_only: int = 0
+    min_full_body: int = 0
+    min_front: int = 0
+    min_side: int = 0
+    min_back: int = 0
+    min_male: int = 0
+    min_female: int = 0
+    min_face_visible: int = 0
+    min_body_visible: int = 0
+
+    # Content policy: any, safe_only, nsfw_only.
+    nsfw_policy: str = "any"
+
+    # Per-image hard quality exclusions.
+    exclude_blurry: bool = False
+    exclude_occluded: bool = False
+    min_quality: float = 0.0
+    min_person_visibility: float = 0.0
+
+    # Soft preferences used during ranking/selection.
+    prefer_face_only: bool = False
+    prefer_full_body: bool = False
+    prefer_front: bool = False
+    prefer_side: bool = False
+    prefer_back: bool = False
+    prefer_solo: bool = False
+    prefer_face_visible: bool = False
+    prefer_body_visible: bool = False
+
+    def to_dict(self) -> dict:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "MosaicRequirements":
+        if not isinstance(d, dict):
+            return cls()
+        kwargs: dict[str, Any] = {}
+        int_fields = (
+            "min_face_only", "min_full_body", "min_front", "min_side", "min_back",
+            "min_male", "min_female", "min_face_visible", "min_body_visible",
+        )
+        for name in int_fields:
+            try:
+                kwargs[name] = max(0, int(d.get(name, 0)))
+            except (TypeError, ValueError):
+                kwargs[name] = 0
+        bool_fields = (
+            "exclude_blurry", "exclude_occluded", "prefer_face_only", "prefer_full_body",
+            "prefer_front", "prefer_side", "prefer_back", "prefer_solo",
+            "prefer_face_visible", "prefer_body_visible",
+        )
+        for name in bool_fields:
+            kwargs[name] = bool(d.get(name, False))
+        for name in ("min_quality", "min_person_visibility"):
+            try:
+                kwargs[name] = max(0.0, min(1.0, float(d.get(name, 0.0))))
+            except (TypeError, ValueError):
+                kwargs[name] = 0.0
+        policy = str(d.get("nsfw_policy", "any"))
+        kwargs["nsfw_policy"] = policy if policy in {"any", "safe_only", "nsfw_only"} else "any"
+        return cls(**kwargs)
+
+
+@dataclass
 class ImageAnalysis:
     has_person: bool = False
     person_count: int = 0
@@ -57,11 +125,12 @@ class ImageAnalysis:
     image_quality: float = 0.0
     subject_quality: float = 0.0
     mosaic_value: float = 0.0
+    visual_tags: dict[str, Any] = field(default_factory=dict)
     reject: bool = False
     reject_reason: str = ""
     notes: str = ""
     raw_response: str = ""
-    analysis_version: int = 1
+    analysis_version: int = 2
     model_used: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -70,7 +139,12 @@ class ImageAnalysis:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ImageAnalysis":
-        bool_fields = ("has_person", "main_subject_is_person", "face_visible", "body_visible", "occluded", "reject")
+        if not isinstance(d, dict):
+            raise ValueError("analysis must be an object")
+        bool_fields = (
+            "has_person", "main_subject_is_person", "face_visible", "body_visible",
+            "occluded", "reject",
+        )
         for field_name in bool_fields:
             if field_name in d and not isinstance(d[field_name], bool):
                 raise ValueError(f"{field_name} must be boolean")
@@ -86,6 +160,9 @@ class ImageAnalysis:
         person_count = int(d.get("person_count", 0))
         if person_count < 0 or person_count > 99:
             raise ValueError("person_count out of range")
+        visual_tags = d.get("visual_tags", {})
+        if not isinstance(visual_tags, dict):
+            raise ValueError("visual_tags must be an object")
         return cls(
             has_person=bool(d.get("has_person", False)),
             person_count=person_count,
@@ -94,11 +171,12 @@ class ImageAnalysis:
             face_visible=bool(d.get("face_visible", False)),
             body_visible=bool(d.get("body_visible", False)),
             occluded=bool(d.get("occluded", False)),
+            visual_tags=dict(visual_tags),
             reject=bool(d.get("reject", False)),
             reject_reason=str(d.get("reject_reason", "")),
             notes=str(d.get("notes", ""))[:1000],
             raw_response=str(d.get("raw_response", "")),
-            analysis_version=int(d.get("analysis_version", 1)),
+            analysis_version=int(d.get("analysis_version", 2)),
             model_used=str(d.get("model_used", "")),
             timestamp=str(d.get("timestamp", datetime.now().isoformat())),
         )
@@ -342,6 +420,7 @@ class AppSettings:
     debug_mode: bool = False
     person_detector_model: str = "yolo26n.pt"
     person_detector_confidence: float = 0.25
+    mosaic_requirements: MosaicRequirements = field(default_factory=MosaicRequirements)
 
     def to_dict(self) -> dict:
         return {
@@ -366,6 +445,7 @@ class AppSettings:
             "debug_mode": self.debug_mode,
             "person_detector_model": self.person_detector_model,
             "person_detector_confidence": self.person_detector_confidence,
+            "mosaic_requirements": self.mosaic_requirements.to_dict(),
         }
 
     @classmethod
@@ -393,4 +473,5 @@ class AppSettings:
             debug_mode=bool(d.get("debug_mode", False)),
             person_detector_model=str(d.get("person_detector_model", "yolo26n.pt")),
             person_detector_confidence=float(d.get("person_detector_confidence", 0.25)),
+            mosaic_requirements=MosaicRequirements.from_dict(d.get("mosaic_requirements", {})),
         )

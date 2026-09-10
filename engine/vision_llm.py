@@ -10,6 +10,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -314,7 +315,23 @@ class VisionLLMEngine:
 
         with self._lock:
             if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path:
+                logger.info(
+                    "[vision] MODEL REUSE | model=%s | mmproj=%s | instance_id=%s",
+                    Path(model_path).name,
+                    Path(mmproj_path).name,
+                    hex(id(self._model)),
+                )
                 return
+
+            load_started = time.perf_counter()
+            logger.info(
+                "[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d",
+                Path(model_path).name,
+                Path(mmproj_path).name,
+                n_ctx,
+                n_gpu_layers,
+                n_threads,
+            )
 
             self._unload()
             self._capabilities = llama_features.detect_vision_capabilities(model_path)
@@ -381,6 +398,13 @@ class VisionLLMEngine:
             self._mmproj_path = mmproj_path
             self._model_name = Path(model_path).name
             self._vision_ready = True
+            load_elapsed = time.perf_counter() - load_started
+            logger.info(
+                "[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | instance_id=%s",
+                self._model_name,
+                load_elapsed,
+                hex(id(self._model)),
+            )
             if progress_callback:
                 progress_callback("Vision model ready.")
 
@@ -395,6 +419,12 @@ class VisionLLMEngine:
 
     def unload(self) -> None:
         with self._lock:
+            if self._model is not None:
+                logger.info(
+                    "[vision] MODEL UNLOAD | model=%s | instance_id=%s",
+                    self._model_name or "unknown",
+                    hex(id(self._model)),
+                )
             self._unload()
             self._capabilities = None
 
@@ -402,6 +432,10 @@ class VisionLLMEngine:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
 
+        image_name = Path(image_path).name
+        total_started = time.perf_counter()
+
+        preprocess_started = time.perf_counter()
         img_b64 = _encode_image_b64(image_path)
         kwargs = {
             "messages": _build_messages(img_b64),
@@ -413,13 +447,46 @@ class VisionLLMEngine:
         }
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
+        preprocess_elapsed = time.perf_counter() - preprocess_started
 
+        logger.info(
+            "[vision] INFERENCE START | image=%s | model=%s | instance_id=%s",
+            image_name,
+            self._model_name,
+            hex(id(self._model)),
+        )
+
+        inference_started = time.perf_counter()
         with self._lock:
             try:
                 response = self._model.create_chat_completion(**kwargs)
                 text = response["choices"][0]["message"]["content"] or ""
             except Exception as exc:
+                inference_elapsed = time.perf_counter() - inference_started
+                total_elapsed = time.perf_counter() - total_started
+                logger.error(
+                    "[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s",
+                    image_name,
+                    inference_elapsed,
+                    total_elapsed,
+                    exc,
+                )
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
+        inference_elapsed = time.perf_counter() - inference_started
+        total_elapsed = time.perf_counter() - total_started
+
+        usage = response.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens", "?")
+        completion_tokens = usage.get("completion_tokens", "?")
+        logger.info(
+            "[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | inference=%.2fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s",
+            image_name,
+            preprocess_elapsed,
+            inference_elapsed,
+            total_elapsed,
+            prompt_tokens,
+            completion_tokens,
+        )
         return _parse_analysis(text, self._model_name)
 
     def analyze_image_raw(self, image_path: str, max_tokens: int = 800, temperature: float = 0.1):

@@ -6,6 +6,7 @@ Right-side panel showing:
   - Crop preview
   - Analysis scores
   - Person detection info
+  - Detected visual attributes
   - Manual override controls
 """
 
@@ -14,31 +15,14 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal, QRect, QPoint
-from PySide6.QtGui import (
-    QColor,
-    QFont,
-    QImage,
-    QPainter,
-    QPen,
-    QPixmap,
-)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QCheckBox,
-    QFrame,
-    QGroupBox,
-    QHBoxLayout,
-    QLabel,
-    QPushButton,
-    QScrollArea,
-    QSizePolicy,
-    QSlider,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
+    QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from engine.models import BoundingBox, ImageRecord, ImageStatus, PersonDetection
+from engine.models import BoundingBox, ImageRecord
 
 logger = logging.getLogger("ui.image_detail")
 
@@ -47,9 +31,7 @@ _CROP_PREVIEW_SIZE = (200, 200)
 
 
 class BboxOverlayLabel(QLabel):
-    """
-    QLabel that draws the image with a bounding box overlay.
-    """
+    """QLabel that draws the image with a bounding box overlay."""
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
@@ -75,10 +57,9 @@ class BboxOverlayLabel(QLabel):
             self.setText("No image")
             return
 
-        px = self._base_pixmap.copy()
         display_w = self.width() or _PREVIEW_MAX_SIZE[0]
         display_h = self.height() or _PREVIEW_MAX_SIZE[1]
-        scaled = px.scaled(
+        scaled = self._base_pixmap.scaled(
             display_w, display_h,
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
@@ -91,7 +72,6 @@ class BboxOverlayLabel(QLabel):
             ry = int(self._bbox.y * sy)
             rw = int(self._bbox.width * sx)
             rh = int(self._bbox.height * sy)
-
             cx = (display_w - scaled.width()) // 2
             cy = (display_h - scaled.height()) // 2
 
@@ -99,8 +79,7 @@ class BboxOverlayLabel(QLabel):
             combined.fill(QColor("#181825"))
             painter = QPainter(combined)
             painter.drawPixmap(cx, cy, scaled)
-            pen = QPen(QColor("#cba6f7"), 3)
-            painter.setPen(pen)
+            painter.setPen(QPen(QColor("#cba6f7"), 3))
             painter.drawRect(cx + rx, cy + ry, rw, rh)
             painter.end()
             self.setPixmap(combined)
@@ -113,10 +92,7 @@ class BboxOverlayLabel(QLabel):
 
 
 class ImageDetailPanel(QWidget):
-    """
-    Right-side detail panel for a selected ImageRecord.
-    Emits include_toggled / exclude_toggled when the user overrides AI selection.
-    """
+    """Right-side detail panel for a selected ImageRecord."""
 
     include_toggled = Signal(object)
     exclude_toggled = Signal(object)
@@ -139,12 +115,9 @@ class ImageDetailPanel(QWidget):
 
         preview_grp = QGroupBox("Preview")
         preview_v = QVBoxLayout(preview_grp)
-
         self._preview_label = BboxOverlayLabel()
         self._preview_label.setFixedHeight(_PREVIEW_MAX_SIZE[1])
-        self._preview_label.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
+        self._preview_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         preview_v.addWidget(self._preview_label)
         layout.addWidget(preview_grp)
 
@@ -155,7 +128,7 @@ class ImageDetailPanel(QWidget):
             row = QHBoxLayout()
             lbl = QLabel(label)
             lbl.setStyleSheet("color: #7f849c; font-size: 11px;")
-            lbl.setMinimumWidth(120)
+            lbl.setMinimumWidth(125)
             val = QLabel("—")
             val.setStyleSheet("color: #cdd6f4; font-size: 11px; font-weight: bold;")
             row.addWidget(lbl)
@@ -177,9 +150,18 @@ class ImageDetailPanel(QWidget):
         _, self._lbl_status = score_row("Status:")
         layout.addWidget(scores_grp)
 
+        tags_grp = QGroupBox("Detected Attributes")
+        tags_form = QVBoxLayout(tags_grp)
+        _, self._lbl_framing = score_row_in(tags_form, "Framing:")
+        _, self._lbl_orientation = score_row_in(tags_form, "Orientation:")
+        _, self._lbl_gender = score_row_in(tags_form, "Gender:")
+        _, self._lbl_content = score_row_in(tags_form, "Content:")
+        _, self._lbl_pose = score_row_in(tags_form, "Pose:")
+        _, self._lbl_gaze = score_row_in(tags_form, "Looking at camera:")
+        layout.addWidget(tags_grp)
+
         crop_grp = QGroupBox("Crop Preview")
         crop_v = QVBoxLayout(crop_grp)
-
         self._crop_label = QLabel()
         self._crop_label.setFixedSize(*_CROP_PREVIEW_SIZE)
         self._crop_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -209,22 +191,18 @@ class ImageDetailPanel(QWidget):
 
         override_grp = QGroupBox("Manual Override")
         override_v = QVBoxLayout(override_grp)
-
         self._btn_include = QPushButton("✓  Force Include")
         self._btn_include.setObjectName("success_btn")
         self._btn_include.clicked.connect(self._on_include)
-
         self._btn_exclude = QPushButton("✗  Force Exclude")
         self._btn_exclude.setObjectName("danger_btn")
         self._btn_exclude.clicked.connect(self._on_exclude)
-
         override_v.addWidget(self._btn_include)
         override_v.addWidget(self._btn_exclude)
         layout.addWidget(override_grp)
 
         layout.addStretch()
         scroll.setWidget(container)
-
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
@@ -233,6 +211,7 @@ class ImageDetailPanel(QWidget):
         self._current_record = record
         self._update_preview(record)
         self._update_scores(record)
+        self._update_tags(record)
         self._update_crop_preview(record)
         self._update_notes(record)
         self._update_buttons(record)
@@ -243,17 +222,11 @@ class ImageDetailPanel(QWidget):
         self._preview_label.set_bbox(None)
         self._crop_label.setText("—")
         for lbl in [
-            self._lbl_score,
-            self._lbl_rank,
-            self._lbl_quality,
-            self._lbl_person_vis,
-            self._lbl_composition,
-            self._lbl_blur,
-            self._lbl_person_cnt,
-            self._lbl_face,
-            self._lbl_body,
-            self._lbl_mosaic,
-            self._lbl_status,
+            self._lbl_score, self._lbl_rank, self._lbl_quality, self._lbl_person_vis,
+            self._lbl_composition, self._lbl_blur, self._lbl_person_cnt, self._lbl_face,
+            self._lbl_body, self._lbl_mosaic, self._lbl_status, self._lbl_framing,
+            self._lbl_orientation, self._lbl_gender, self._lbl_content, self._lbl_pose,
+            self._lbl_gaze,
         ]:
             lbl.setText("—")
         self._notes_label.setText("—")
@@ -277,7 +250,6 @@ class ImageDetailPanel(QWidget):
     def _update_scores(self, record: ImageRecord) -> None:
         a = record.analysis
         r = record.ranking
-
         self._lbl_score.setText(f"{r.final_score:.1f} / 100" if r else "—")
         self._lbl_rank.setText(f"#{r.rank}" if (r and r.rank > 0) else "—")
         self._lbl_quality.setText(f"{a.image_quality:.0%}" if a else "—")
@@ -289,6 +261,16 @@ class ImageDetailPanel(QWidget):
         self._lbl_body.setText(("Yes" if a.body_visible else "No") if a else "—")
         self._lbl_mosaic.setText(f"{a.mosaic_value:.0%}" if a else "—")
         self._lbl_status.setText(record.status.value.upper())
+
+    def _update_tags(self, record: ImageRecord) -> None:
+        tags = record.analysis.visual_tags if record.analysis else {}
+        self._lbl_framing.setText(str(tags.get("framing", "unknown")).replace("_", " ").title())
+        self._lbl_orientation.setText(str(tags.get("orientation", "unknown")).replace("_", " ").title())
+        self._lbl_gender.setText(str(tags.get("gender_presentation", "unknown")).title())
+        self._lbl_content.setText(str(tags.get("content_rating", "unknown")).title())
+        self._lbl_pose.setText(str(tags.get("pose", "unknown")).replace("_", " ").title())
+        gaze = tags.get("looking_at_camera")
+        self._lbl_gaze.setText(("Yes" if gaze else "No") if isinstance(gaze, bool) else "Unknown")
 
     def _update_crop_preview(self, record: ImageRecord) -> None:
         try:
@@ -309,10 +291,9 @@ class ImageDetailPanel(QWidget):
             import io
             buf = io.BytesIO()
             cropped.save(buf, format="PNG")
-            buf.seek(0)
-            img = QImage()
-            img.loadFromData(buf.getvalue())
-            self._crop_label.setPixmap(QPixmap.fromImage(img))
+            image = QImage()
+            image.loadFromData(buf.getvalue())
+            self._crop_label.setPixmap(QPixmap.fromImage(image))
         except Exception as e:
             logger.debug(f"[detail] Crop preview error: {e}")
             self._crop_label.setText("—")
@@ -326,15 +307,8 @@ class ImageDetailPanel(QWidget):
             self._notes_label.setText("—")
 
     def _update_buttons(self, record: ImageRecord) -> None:
-        if record.manually_included:
-            self._btn_include.setText("✓  Included (click to undo)")
-        else:
-            self._btn_include.setText("✓  Force Include")
-
-        if record.manually_excluded:
-            self._btn_exclude.setText("✗  Excluded (click to undo)")
-        else:
-            self._btn_exclude.setText("✗  Force Exclude")
+        self._btn_include.setText("✓  Included (click to undo)" if record.manually_included else "✓  Force Include")
+        self._btn_exclude.setText("✗  Excluded (click to undo)" if record.manually_excluded else "✗  Force Exclude")
 
     def _on_include(self) -> None:
         if self._current_record:
@@ -348,3 +322,17 @@ class ImageDetailPanel(QWidget):
         if self._current_record:
             self._update_crop_preview(self._current_record)
             self.padding_changed.emit(self._current_record, value)
+
+
+def score_row_in(layout: QVBoxLayout, label: str) -> tuple[QLabel, QLabel]:
+    row = QHBoxLayout()
+    lbl = QLabel(label)
+    lbl.setStyleSheet("color: #7f849c; font-size: 11px;")
+    lbl.setMinimumWidth(125)
+    val = QLabel("—")
+    val.setStyleSheet("color: #cdd6f4; font-size: 11px; font-weight: bold;")
+    row.addWidget(lbl)
+    row.addWidget(val)
+    row.addStretch()
+    layout.addLayout(row)
+    return lbl, val

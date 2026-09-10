@@ -1,18 +1,24 @@
-# UI
+# AI Mosaic Builder
+# Python 3.10+ recommended
+
+# ── Desktop UI ────────────────────────────────────────────────────────────────
 PySide6>=6.5.0
 
-# Local LLM / multimodal vision
-# Gemma-4 support requires a llama-cpp-python release that includes Gemma4ChatHandler.
+# ── Local LLM / multimodal vision ────────────────────────────────────────────
+# Uses the same llama-cpp-python integration pattern as AIStoryWriter.
+# Gemma-4 requires a release that provides Gemma4ChatHandler.
 llama-cpp-python>=0.3.33,<0.4
 
-# Image processing
+# ── Image processing ─────────────────────────────────────────────────────────
 Pillow>=10.0.0
 numpy>=1.24.0
-
-# Person detection
-ultralytics>=8.3.0
-# OpenCV remains available for the lightweight HOG fallback.
 opencv-python>=4.8.0
 
-# Perceptual hashing for near-duplicate detection
+# ── Real person detection ────────────────────────────────────────────────────
+# YOLO is the primary person-detection backend.
+# Do not pin torch here: preserve the compatible PyTorch installation already
+# present in the shared environment; Ultralytics declares torch as a dependency.
+ultralytics>=8.3.0
+
+# ── Near-duplicate / diversity analysis ─────────────────────────────────────
 imagehash>=4.3.0

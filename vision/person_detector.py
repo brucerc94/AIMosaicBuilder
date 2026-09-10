@@ -32,23 +32,41 @@ class OpenCVHOGPersonDetector(BasePersonDetector):
         """Create HOG across OpenCV Python builds that expose either API."""
         factory = getattr(cv2, "HOGDescriptor_create", None)
         if callable(factory):
-            return factory()
+            try:
+                return factory()
+            except Exception as exc:
+                raise RuntimeError(f"HOGDescriptor_create() failed: {exc}") from exc
+
         hog_cls = getattr(cv2, "HOGDescriptor", None)
-        if hog_cls is not None:
-            return hog_cls()
+        if callable(hog_cls):
+            try:
+                return hog_cls()
+            except Exception as exc:
+                raise RuntimeError(f"HOGDescriptor() failed: {exc}") from exc
+
+        version = getattr(cv2, "__version__", "unknown")
+        module_path = getattr(cv2, "__file__", "unknown")
         raise RuntimeError(
-            "This OpenCV build does not expose HOGDescriptor/HOGDescriptor_create. "
-            "Install a standard opencv-python build."
+            "This OpenCV build does not expose HOGDescriptor or HOGDescriptor_create. "
+            f"cv2 version={version}; module={module_path}. "
+            "Check that a standard opencv-python package is installed and that no local "
+            "cv2.py/cv2 package is shadowing it."
         )
 
     @staticmethod
     def _default_people_detector(cv2):
         detector_factory = getattr(cv2, "HOGDescriptor_getDefaultPeopleDetector", None)
         if not callable(detector_factory):
+            version = getattr(cv2, "__version__", "unknown")
+            module_path = getattr(cv2, "__file__", "unknown")
             raise RuntimeError(
-                "This OpenCV build does not expose the default people detector."
+                "This OpenCV build does not expose the default HOG people detector. "
+                f"cv2 version={version}; module={module_path}."
             )
-        return detector_factory()
+        try:
+            return detector_factory()
+        except Exception as exc:
+            raise RuntimeError(f"Default HOG people detector failed: {exc}") from exc
 
     def detect(self, image_path: str, analysis: Optional[ImageAnalysis] = None) -> list[PersonDetection]:
         try:
@@ -109,13 +127,19 @@ def _position(cx: float, cy: float, width: int, height: int) -> str:
 
 def get_default_detector() -> BasePersonDetector:
     try:
-        import cv2  # noqa: F401
+        import cv2
+        version = getattr(cv2, "__version__", "unknown")
+        module_path = getattr(cv2, "__file__", "unknown")
+        logger.info("OpenCV detected: version=%s module=%s", version, module_path)
+
         detector = OpenCVHOGPersonDetector()
         # Validate the required symbols now, so UI can report a useful error before a batch starts.
         detector._create_hog(cv2)
         detector._default_people_detector(cv2)
+        logger.info("OpenCV HOG person detector ready")
         return detector
-    except (ImportError, RuntimeError):
+    except (ImportError, RuntimeError) as exc:
+        logger.error("OpenCV person detector unavailable: %s", exc)
         return UnavailablePersonDetector()
 
 

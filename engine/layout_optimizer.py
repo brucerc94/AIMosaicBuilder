@@ -63,8 +63,7 @@ def _best_detection(record: ImageRecord):
 def _crop_for_record(record: ImageRecord, padding_px: int) -> BoundingBox:
     if record.selection and record.selection.crop_bbox:
         return record.selection.crop_bbox
-    detection = _best_detection(record)
-    return compute_crop_box(detection.bbox, record.width, record.height, padding_px)
+    return compute_crop_box(_best_detection(record).bbox, record.width, record.height, padding_px)
 
 
 def _place_box(
@@ -80,14 +79,12 @@ def _place_box(
     target_subject_px: int,
     max_zoom: float,
 ) -> LayoutPlacement | None:
-    """Find a readable zoom, preferring a subject size instead of a fixed zoom."""
+    """Find the largest practical zoom that fits without overlap."""
     detection = _best_detection(record)
     subject_height = max(1, detection.bbox.height)
     ideal_zoom = target_subject_px / float(subject_height)
-    # Keep the viewer's original 0.5 as a neutral fallback, but permit zoom-in
-    # for small subjects and zoom-out for very large crops.
     preferred_zoom = max(min_zoom, min(max_zoom, ideal_zoom))
-    if not preferred_zoom or preferred_zoom != preferred_zoom:
+    if preferred_zoom != preferred_zoom:
         preferred_zoom = max(min_zoom, min(max_zoom, initial_zoom))
 
     zoom = preferred_zoom
@@ -99,7 +96,15 @@ def _place_box(
             displayed_subject_px = int(subject_height * zoom)
             if displayed_subject_px < min_subject_px:
                 return None
-            return LayoutPlacement(record, crop, round(zoom, 6), width, height, position[0], position[1])
+            return LayoutPlacement(
+                record=record,
+                crop_bbox=crop,
+                zoom=round(zoom, 6),
+                width=width,
+                height=height,
+                x=position[0],
+                y=position[1],
+            )
         zoom *= zoom_decay
     return None
 
@@ -220,20 +225,34 @@ def _candidate_order(records: Iterable[ImageRecord], requirements: MosaicRequire
     )
 
 
-def _evaluate(
-    candidates: list[ImageRecord],
+def optimize_auto_layout(
+    records: list[ImageRecord],
     canvas_size: tuple[int, int],
     padding_px: int,
-    target: int,
-    requirements: MosaicRequirements,
-    phash_threshold: int,
-    initial_zoom: float,
-    min_zoom: float,
-    zoom_decay: float,
-    min_subject_px: int,
-    target_subject_px: int,
-    max_zoom: float,
+    requirements: MosaicRequirements | None = None,
+    phash_threshold: int = 10,
+    max_images: int = 100,
+    initial_zoom: float = 0.5,
+    min_zoom: float = 0.1,
+    zoom_decay: float = 0.9,
+    min_subject_px: int = 120,
+    target_subject_px: int = 240,
+    max_zoom: float = 1.5,
 ) -> LayoutEvaluation:
+    """Fill the canvas with the largest readable set up to max_images.
+
+    The packing algorithm matches ImageMosaicView: top-left scan in 10-pixel
+    increments and repeated 0.9 zoom reduction when an item does not fit.
+    Unlike the viewer's neutral default, AUTO chooses an ideal zoom from the
+    detected subject height, so small face crops can zoom in and large body
+    crops can zoom out while preserving a readable subject.
+    """
+    requirements = requirements or MosaicRequirements()
+    candidates = _candidate_order(records, requirements)
+    target = min(len(candidates), max(0, int(max_images)))
+    if target <= 0:
+        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, _required_names(requirements))
+
     canvas_w, canvas_h = map(int, canvas_size)
     occupied: list[tuple[int, int, int, int]] = []
     placements: list[LayoutPlacement] = []
@@ -243,15 +262,13 @@ def _evaluate(
     for required_name in _required_names(requirements):
         if len(chosen) >= target:
             unmet.append(required_name)
-            break
-        matching = [
-            record for record in candidates
-            if record not in chosen
-            and _matches_requirement(record, required_name)
-            and not _too_similar(record, chosen, phash_threshold)
-        ]
+            continue
         placed = False
-        for candidate in matching:
+        for candidate in candidates:
+            if candidate in chosen or _too_similar(candidate, chosen, phash_threshold):
+                continue
+            if not _matches_requirement(candidate, required_name):
+                continue
             placement = _place(
                 candidate, canvas_w, canvas_h, padding_px, occupied,
                 initial_zoom, min_zoom, zoom_decay,
@@ -285,7 +302,7 @@ def _evaluate(
 
     canvas_area = max(1, canvas_w * canvas_h)
     occupied_area = sum(p.width * p.height for p in placements)
-    return LayoutEvaluation(
+    evaluation = LayoutEvaluation(
         placements=placements,
         target=target,
         average_zoom=sum(p.zoom for p in placements) / len(placements) if placements else 0.0,
@@ -297,59 +314,13 @@ def _evaluate(
         canvas_fill_ratio=occupied_area / canvas_area,
         unmet_requirements=unmet,
     )
-
-
-def optimize_auto_layout(
-    records: list[ImageRecord],
-    canvas_size: tuple[int, int],
-    padding_px: int,
-    requirements: MosaicRequirements | None = None,
-    phash_threshold: int = 10,
-    max_images: int = 100,
-    initial_zoom: float = 0.5,
-    min_zoom: float = 0.1,
-    zoom_decay: float = 0.9,
-    min_subject_px: int = 120,
-    target_subject_px: int = 240,
-    max_zoom: float = 1.5,
-) -> LayoutEvaluation:
-    """Choose the largest readable mosaic with per-image automatic zoom.
-
-    Packing follows ImageMosaicView's 10 px scan. Each subject gets an ideal
-    display height first; the zoom is then reduced by 10%% until the crop fits.
-    This allows small face crops to zoom in while large full-body crops zoom out.
-    """
-    requirements = requirements or MosaicRequirements()
-    candidates = _candidate_order(records, requirements)
-    limit = min(len(candidates), max(1, int(max_images)))
-    best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [])
-
-    for target in range(1, limit + 1):
-        evaluation = _evaluate(
-            candidates,
-            canvas_size,
-            padding_px,
-            target,
-            requirements,
-            phash_threshold,
-            initial_zoom,
-            min_zoom,
-            zoom_decay,
-            min_subject_px,
-            target_subject_px,
-            max_zoom,
-        )
-        if len(evaluation.placements) < target:
-            break
-        best = evaluation
-
     logger.info(
-        "AUTO layout: selected=%d/%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx unmet=%s",
-        len(best.placements), len(candidates), canvas_size[0], canvas_size[1],
-        best.average_zoom, best.canvas_fill_ratio * 100.0, best.average_subject_px,
-        ",".join(best.unmet_requirements) if best.unmet_requirements else "none",
+        "AUTO layout: selected=%d/%d max=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx unmet=%s",
+        len(placements), len(candidates), max_images, canvas_w, canvas_h,
+        evaluation.average_zoom, evaluation.canvas_fill_ratio * 100.0,
+        evaluation.average_subject_px, ",".join(unmet) if unmet else "none",
     )
-    return best
+    return evaluation
 
 
 def simulate_viewer_layout(
@@ -361,13 +332,13 @@ def simulate_viewer_layout(
     zoom_decay: float = 0.9,
     min_subject_px: int = 0,
 ) -> list[LayoutPlacement]:
-    """Simulate ImageMosaicView loading order for export fallback."""
+    """Simulate loading order for export fallback."""
     ordered = sorted(
         records,
-        key=lambda r: (
-            r.selection.slot_index if r.selection else 10**9,
-            -(r.ranking.final_score if r.ranking else 0.0),
-            r.filename.lower(),
+        key=lambda record: (
+            record.selection.slot_index if record.selection else 10**9,
+            -(record.ranking.final_score if record.ranking else 0.0),
+            record.filename.lower(),
         ),
     )
     occupied: list[tuple[int, int, int, int]] = []

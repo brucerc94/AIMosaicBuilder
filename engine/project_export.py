@@ -43,9 +43,9 @@ def export_project(
 ) -> Path:
     """Export only the JSON consumed by ImageMosaicView.
 
-    The builder never writes crop images. It stores original-image filenames and
-    crop coordinates; ImageMosaicView reopens the originals and renders crops
-    dynamically. The zoom values are computed with the viewer's packing rules.
+    No cropped image files are created. The export stores original-image
+    filenames, crop coordinates and the per-image zoom chosen by the layout
+    optimizer. ImageMosaicView reconstructs the crop dynamically.
     """
     root = Path(output_dir)
     root.mkdir(parents=True, exist_ok=True)
@@ -55,7 +55,12 @@ def export_project(
         record for record in records
         if record.status == ImageStatus.SELECTED and record.detections
     ]
-    layout = simulate_viewer_layout(
+    if not selected_records:
+        raise ValueError("No selected images are available for export.")
+
+    # Prefer the zoom/crop produced by the optimizer. For older session records
+    # without that metadata, simulate ImageMosaicView's packing now.
+    fallback_layout = simulate_viewer_layout(
         selected_records,
         canvas_size=(canvas_w, canvas_h),
         padding_px=padding_px,
@@ -64,7 +69,8 @@ def export_project(
         zoom_decay=0.9,
         min_subject_px=0,
     )
-    placements = {placement.record.path: placement for placement in layout}
+    fallback_by_path = {placement.record.path: placement for placement in fallback_layout}
+
     ordered_records = sorted(
         selected_records,
         key=lambda record: (
@@ -75,15 +81,24 @@ def export_project(
 
     viewer_entries: list[dict] = []
     for record in ordered_records:
-        placement = placements.get(record.path)
-        if placement is None:
-            continue
-        crop = placement.crop_bbox
+        crop = record.selection.crop_bbox if record.selection and record.selection.crop_bbox else None
+        zoom = record.selection.zoom if record.selection else None
+        fallback = fallback_by_path.get(record.path)
+        if crop is None and fallback is not None:
+            crop = fallback.crop_bbox
+        if zoom is None and fallback is not None:
+            zoom = fallback.zoom
+        if crop is None:
+            detection = max(record.detections, key=lambda d: (d.is_main, d.confidence, d.relative_size))
+            crop = compute_crop_box(detection.bbox, record.width, record.height, padding_px)
+        if zoom is None:
+            zoom = 0.5
+
         viewer_entries.append({
             "type": "body",
             "filename": _relative_source_filename(Path(record.path), root),
             "coords": _relative_coords(crop, record.width, record.height),
-            "zoom": placement.zoom,
+            "zoom": float(zoom),
             "canvas_size": [canvas_w, canvas_h],
         })
 

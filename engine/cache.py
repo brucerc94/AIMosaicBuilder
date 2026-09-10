@@ -1,28 +1,14 @@
 """
 Analysis cache for AI Mosaic Builder.
 
-Stores analysis results keyed by file SHA-256 hash.
-This means:
-  - Moving or renaming a file does NOT invalidate its cache entry.
-  - Changing target_images or ranking weights does NOT re-trigger analysis.
-  - Corrupt or truncated files that change their content DO get re-analysed.
+Each source/project folder can have its own cache. Cache entries are still
+keyed by SHA-256, so adding new photos only analyzes files that are not already
+present in that source folder's cache.
 
-The cache is a single JSON file (one dict per entry).
-Format:
-  {
-    "<sha256>": {
-      "file_hash":        "<sha256>",
-      "path":             "<last known absolute path>",
-      "analysis_result":  { ... ImageAnalysis.to_dict() ... },
-      "model":            "<model filename>",
-      "analysis_version": 1,
-      "timestamp":        "<iso datetime>"
-    },
-    ...
-  }
+Cache layout for a source folder:
+    <source>/.aimosaic/analysis_cache.json
 
-Cache hits/misses are logged at INFO level.
-The path stored is for human reference only — the hash is the real key.
+The cache stores analysis results, not image data.
 """
 
 from __future__ import annotations
@@ -30,7 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -40,22 +26,36 @@ logger = logging.getLogger("cache")
 
 _CACHE_VERSION = 1
 _DEFAULT_CACHE_FILENAME = "analysis_cache.json"
+_DEFAULT_CACHE_DIRNAME = ".aimosaic"
 
 
 class AnalysisCache:
-    """Thread-safe read/write cache backed by a JSON file."""
+    """Read/write JSON cache scoped to a specific source/project folder."""
 
     def __init__(self, cache_dir: str = "") -> None:
         if cache_dir:
             self._cache_path = Path(cache_dir) / _DEFAULT_CACHE_FILENAME
         else:
-            self._cache_path = Path(__file__).parent.parent / "data" / _DEFAULT_CACHE_FILENAME
+            # Fallback only when no source-specific cache directory is known.
+            self._cache_path = (
+                Path(__file__).parent.parent
+                / "data"
+                / _DEFAULT_CACHE_FILENAME
+            )
 
         self._data: dict[str, dict] = {}
         self._dirty = False
         self._load()
 
-    # ── Public interface ───────────────────────────────────────────────────────
+    @property
+    def cache_path(self) -> Path:
+        """Absolute path of the backing cache file."""
+        return self._cache_path.resolve()
+
+    @property
+    def cache_dir(self) -> Path:
+        """Directory containing the backing cache file."""
+        return self.cache_path.parent
 
     def get(self, file_hash: str, model: str = "") -> Optional[ImageAnalysis]:
         """
@@ -66,18 +66,23 @@ class AnalysisCache:
         if entry is None:
             logger.debug(f"[cache] MISS {file_hash[:12]}…")
             return None
+
         if model and entry.get("model", "") != model:
             logger.debug(
                 f"[cache] MISS (model changed) {file_hash[:12]}… "
                 f"cached={entry.get('model', '?')} requested={model}"
             )
             return None
+
         try:
             analysis = ImageAnalysis.from_dict(entry["analysis_result"])
-            logger.debug(f"[cache] HIT  {file_hash[:12]}… path={entry.get('path', '?')}")
+            logger.debug(
+                f"[cache] HIT  {file_hash[:12]}… "
+                f"path={entry.get('path', '?')}"
+            )
             return analysis
-        except Exception as e:
-            logger.warning(f"[cache] Corrupt entry {file_hash[:12]}: {e}")
+        except Exception as exc:
+            logger.warning(f"[cache] Corrupt entry {file_hash[:12]}: {exc}")
             return None
 
     def put(
@@ -88,14 +93,13 @@ class AnalysisCache:
         model: str = "",
     ) -> None:
         """Store or overwrite an analysis result."""
-        from datetime import datetime
         self._data[file_hash] = {
-            "file_hash":        file_hash,
-            "path":             path,
-            "analysis_result":  analysis.to_dict(),
-            "model":            model,
+            "file_hash": file_hash,
+            "path": path,
+            "analysis_result": analysis.to_dict(),
+            "model": model,
             "analysis_version": _CACHE_VERSION,
-            "timestamp":        datetime.now().isoformat(),
+            "timestamp": datetime.now().isoformat(),
         }
         self._dirty = True
         logger.debug(f"[cache] STORE {file_hash[:12]}… path={path}")
@@ -107,9 +111,10 @@ class AnalysisCache:
         return len(self._data)
 
     def flush(self) -> None:
-        """Write cache to disk if dirty."""
+        """Write cache atomically if there are pending changes."""
         if not self._dirty:
             return
+
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
             tmp = self._cache_path.with_suffix(".tmp")
@@ -119,36 +124,55 @@ class AnalysisCache:
             )
             tmp.replace(self._cache_path)
             self._dirty = False
-            logger.debug(f"[cache] Flushed {len(self._data)} entries to {self._cache_path}")
-        except Exception as e:
-            logger.error(f"[cache] Failed to flush: {e}")
+            logger.info(
+                f"[cache] Flushed {len(self._data)} entries to {self._cache_path}"
+            )
+        except Exception as exc:
+            logger.error(f"[cache] Failed to flush: {exc}")
 
     def clear(self) -> None:
         self._data.clear()
         self._dirty = True
         self.flush()
 
-    # ── Internals ─────────────────────────────────────────────────────────────
-
     def _load(self) -> None:
         if not self._cache_path.exists():
-            logger.info(f"[cache] No cache file found at {self._cache_path} — starting fresh")
+            logger.info(
+                f"[cache] No cache file found at {self._cache_path} — starting fresh"
+            )
             return
+
         try:
             text = self._cache_path.read_text(encoding="utf-8")
-            self._data = json.loads(text)
-            logger.info(f"[cache] Loaded {len(self._data)} cached entries from {self._cache_path}")
-        except Exception as e:
-            logger.warning(f"[cache] Could not load cache: {e} — starting fresh")
+            parsed = json.loads(text)
+            if not isinstance(parsed, dict):
+                raise ValueError("cache root must be a JSON object")
+            self._data = parsed
+            logger.info(
+                f"[cache] Loaded {len(self._data)} cached entries from "
+                f"{self._cache_path}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[cache] Could not load cache {self._cache_path}: {exc} — "
+                "starting fresh"
+            )
             self._data = {}
+
+
+def source_cache_dir(source_folder: str | Path) -> Path:
+    """Return the cache directory belonging to a source/project folder."""
+    source = Path(source_folder).expanduser().resolve()
+    return source / _DEFAULT_CACHE_DIRNAME
 
 
 # ─── File hashing ─────────────────────────────────────────────────────────────
 
+
 def compute_file_hash(path: str, chunk_size: int = 65536) -> str:
     """
     Compute SHA-256 of a file's content.
-    Returns hex string, e.g. "a3f2...".
+    Returns hex string.
     Raises OSError if file cannot be read.
     """
     h = hashlib.sha256()
@@ -167,14 +191,36 @@ _default_cache: Optional[AnalysisCache] = None
 
 
 def get_cache(cache_dir: str = "") -> AnalysisCache:
-    """Return (or create) the module-level cache singleton."""
+    """Return a cache singleton scoped to the requested cache directory."""
     global _default_cache
+
+    requested = (
+        Path(cache_dir).expanduser().resolve()
+        if cache_dir
+        else None
+    )
+
     if _default_cache is None:
-        _default_cache = AnalysisCache(cache_dir)
+        _default_cache = AnalysisCache(str(requested) if requested else "")
+        return _default_cache
+
+    current = _default_cache.cache_dir.resolve()
+    if requested is None:
+        desired = current
+    else:
+        desired = requested
+
+    if current != desired:
+        # Persist pending writes before switching projects.
+        _default_cache.flush()
+        _default_cache = AnalysisCache(str(desired))
+
     return _default_cache
 
 
 def reset_cache_singleton() -> None:
-    """For tests: discard the singleton so a new one is created on next call."""
+    """For tests: discard the singleton so a new cache is created."""
     global _default_cache
+    if _default_cache is not None:
+        _default_cache.flush()
     _default_cache = None

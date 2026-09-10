@@ -8,8 +8,7 @@ from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
 from engine.cache import AnalysisCache
 from engine.image_analyzer import AnalysisPipeline
-from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout, optimize_fixed_layout
-from engine.models import AppSettings, ImageRecord
+from engine.models import AppSettings, ImageRecord, ImageStatus
 from engine.ranking import rank_records
 from engine.vision_llm import VisionLLMEngine
 from vision.person_detector import detect_persons
@@ -90,7 +89,7 @@ class PostProcessSignals(QObject):
 
 
 class PostProcessWorker(QRunnable):
-    """Run person detection, ranking and layout selection off the UI thread."""
+    """Detect people and rank candidates; canvas layout is deferred until export."""
 
     def __init__(self, records: list[ImageRecord], settings: AppSettings):
         super().__init__()
@@ -118,6 +117,8 @@ class PostProcessWorker(QRunnable):
                 detector_error = str(exc)
                 logger.error("[post] person detector initialization failed: %s", exc, exc_info=True)
 
+            # Analyze/detection phase must not depend on canvas size, target count
+            # or zoom. Those values can change later without reprocessing photos.
             for index, record in enumerate(self._records, start=1):
                 if self._cancelled:
                     break
@@ -136,50 +137,34 @@ class PostProcessWorker(QRunnable):
                             record.error_message = "No real person bounding box detected."
                 self.signals.progress.emit(index, total, record.filename)
 
-            requirements = self._settings.mosaic_requirements
-            ranked = rank_records(self._records, self._settings.ranking_weights, requirements)
-            target = int(self._settings.target_images)
+            # Ranking is also independent from the canvas/layout.
+            ranked = rank_records(
+                self._records,
+                self._settings.ranking_weights,
+                self._settings.mosaic_requirements,
+            )
 
-            if target == 0:
-                layout = optimize_auto_layout(
-                    ranked,
-                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
-                    padding_px=self._settings.padding_px,
-                    requirements=requirements,
-                    phash_threshold=self._settings.phash_threshold,
-                    max_images=100,
-                    min_zoom=0.1,
-                    zoom_decay=0.9,
-                    min_subject_px=160,
-                    target_subject_px=260,
-                    max_zoom=3.0,
-                )
-                mode = "AUTO"
-            else:
-                layout = optimize_fixed_layout(
-                    ranked,
-                    target=target,
-                    canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
-                    padding_px=self._settings.padding_px,
-                    requirements=requirements,
-                    phash_threshold=self._settings.phash_threshold,
-                    min_subject_px=160,
-                    target_subject_px=260,
-                    max_zoom=3.0,
-                )
-                mode = f"FIXED={target}"
+            # Do not lock the results to a particular canvas during Analyze.
+            # Generate Mosaic will decide selection, N and zoom later.
+            for record in ranked:
+                if record.status == ImageStatus.SELECTED:
+                    record.status = ImageStatus.ANALYZED
+                record.selection = None
 
-            apply_layout_selection(layout, ranked)
-
-            if layout.unmet_requirements:
-                logger.warning("[post] Unmet mosaic requirements: %s", ", ".join(layout.unmet_requirements))
+            candidate_count = sum(
+                1
+                for record in ranked
+                if record.analysis
+                and record.analysis.has_person
+                and record.detections
+                and record.ranking
+                and record.ranking.final_score > 0
+                and not record.manually_excluded
+            )
             logger.info(
-                "[post] layout mode=%s selected=%d avg_zoom=%.3f canvas_fill=%.1f%% subject=%.0fpx",
-                mode,
-                len(layout.placements),
-                layout.average_zoom,
-                layout.canvas_fill_ratio * 100.0,
-                layout.average_subject_px,
+                "[post] analysis/ranking complete: records=%d candidates=%d; layout deferred to Generate Mosaic",
+                len(ranked),
+                candidate_count,
             )
             self.signals.finished.emit(ranked)
         except Exception as exc:

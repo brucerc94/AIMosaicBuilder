@@ -239,10 +239,20 @@ class MainWindow(QMainWindow):
             return
 
         source_folder = Path(self._settings.last_source_folder)
-        self._summary.setText("Optimizing canvas layout…")
+        self._summary.setText("Preparing mosaic recipe and optimizing canvas layout…")
         try:
+            # Re-rank immediately before generation so changes to preferences or
+            # requirements made after Analyze are reflected without re-analyzing.
+            ranked = rank_records(
+                self._records,
+                self._settings.ranking_weights,
+                self._settings.mosaic_requirements,
+            )
+            self._records = ranked
+            candidates = self._layout_candidates()
             requirements = self._settings.mosaic_requirements
             target = int(self._settings.target_images)
+
             if target == 0:
                 layout = optimize_auto_layout(
                     candidates,

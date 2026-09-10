@@ -26,13 +26,12 @@ except ImportError:
     Llama = None  # type: ignore
     _llama_available = False
 
-_SYSTEM_PROMPT = """You are a photo-quality evaluator for a portrait mosaic.
-Analyze the supplied photograph itself. Respond with ONLY one valid JSON object.
-Do not use markdown fences or explanations.
-Be conservative: use \"unknown\" whenever a visual attribute cannot be determined reliably."""
+_SYSTEM_PROMPT = """You are a photo evaluator for a portrait mosaic.
+Analyze the supplied photograph and return ONLY one valid JSON object.
+Use unknown when a visual attribute cannot be determined reliably."""
 
-_USER_PROMPT = """Analyze this photograph for a portrait mosaic.
-Return JSON with these exact top-level fields:
+_USER_PROMPT = """Analyze this photo for a portrait mosaic. Return ONLY JSON.
+Required fields:
 {
   "has_person": boolean,
   "person_count": integer,
@@ -41,36 +40,25 @@ Return JSON with these exact top-level fields:
   "face_visible": boolean,
   "body_visible": boolean,
   "occluded": boolean,
-  "blur": number 0..1 where 0 is sharp,
+  "blur": number 0..1,
   "composition": number 0..1,
   "image_quality": number 0..1,
   "subject_quality": number 0..1,
   "mosaic_value": number 0..1,
   "visual_tags": {
-    "framing": "face_only" | "head_shoulders" | "upper_body" | "half_body" | "full_body" | "unknown",
-    "orientation": "front" | "three_quarter_front" | "side" | "three_quarter_back" | "back" | "unknown",
-    "gender_presentation": "male" | "female" | "unknown",
-    "content_rating": "safe" | "suggestive" | "explicit" | "unknown",
-    "pose": "standing" | "seated" | "lying" | "walking" | "other" | "unknown",
+    "framing": "face_only|head_shoulders|upper_body|half_body|full_body|unknown",
+    "orientation": "front|three_quarter_front|side|three_quarter_back|back|unknown",
+    "gender_presentation": "male|female|unknown",
+    "content_rating": "safe|suggestive|explicit|unknown",
+    "pose": "standing|seated|lying|walking|other|unknown",
     "looking_at_camera": boolean
   },
   "reject": boolean,
-  "reject_reason": string,
+  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty",
   "notes": string
 }
-
-Definitions:
-- face_only: head/face is the dominant visible subject; shoulders/body are mostly outside the crop.
-- head_shoulders: head and shoulders are visible, but not substantial torso/legs.
-- upper_body: head plus substantial torso/arms, but not most of the legs.
-- half_body: roughly waist-up or similar partial-body framing.
-- full_body: essentially the complete person is visible, including both feet when the image allows it.
-- orientation is the person's dominant body/face direction.
-- gender_presentation is only a visual presentation category, not a claim about identity; use unknown when unclear.
-- content_rating: safe = non-sexual; suggestive = sexualized/suggestive but not explicit; explicit = explicit sexual content; unknown = cannot determine.
-- looking_at_camera should be true only when the main person's gaze is reasonably directed at the camera.
-
-Use only: no_person, blurry, low_quality, occluded, person_too_small, or empty for reject_reason."""
+Be conservative. gender_presentation is visual presentation only; use unknown when unclear.
+"""
 
 
 def _detect_gpu_info() -> Optional[dict]:
@@ -84,12 +72,7 @@ def _detect_gpu_info() -> Optional[dict]:
         parts = [p.strip() for p in result.stdout.splitlines()[0].split(",")]
         if len(parts) < 4:
             return None
-        return {
-            "name": parts[0],
-            "mem_total": int(float(parts[1])),
-            "mem_free": int(float(parts[2])),
-            "compute_cap": parts[3],
-        }
+        return {"name": parts[0], "mem_total": int(float(parts[1])), "mem_free": int(float(parts[2])), "compute_cap": parts[3]}
     except Exception:
         return None
 
@@ -118,13 +101,11 @@ def _build_chat_handler(handler_name: str, mmproj_path: str):
             f"The installed llama-cpp-python build does not provide {handler_name}. "
             "Gemma-4 requires Gemma4ChatHandler; upgrade llama-cpp-python to a build that supports Gemma-4."
         )
-
     import inspect
     try:
         params = inspect.signature(handler_cls).parameters
     except Exception:
         params = {}
-
     if "clip_model_path" in params:
         return handler_cls(clip_model_path=mmproj_path)
     if "mmproj_path" in params:
@@ -156,35 +137,25 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def _strict_analysis(data: dict) -> dict:
-    required_bools = (
-        "has_person", "main_subject_is_person", "face_visible",
-        "body_visible", "occluded", "reject",
-    )
-    required_numbers = (
-        "person_visibility", "blur", "composition", "image_quality",
-        "subject_quality", "mosaic_value",
-    )
+    required_bools = ("has_person", "main_subject_is_person", "face_visible", "body_visible", "occluded", "reject")
+    required_numbers = ("person_visibility", "blur", "composition", "image_quality", "subject_quality", "mosaic_value")
     for field in required_bools:
         if not isinstance(data.get(field), bool):
             raise ValueError(f"{field} must be boolean")
-
     try:
         person_count = int(data.get("person_count"))
     except (TypeError, ValueError) as exc:
         raise ValueError("person_count must be integer") from exc
     if not 0 <= person_count <= 99:
         raise ValueError("person_count out of range")
-
     for field in required_numbers:
         value = float(data.get(field))
         if not math.isfinite(value) or not 0.0 <= value <= 1.0:
             raise ValueError(f"{field} must be in 0..1")
         data[field] = value
-
     tags = data.get("visual_tags")
     if not isinstance(tags, dict):
         raise ValueError("visual_tags must be an object")
-
     enum_fields = {
         "framing": {"face_only", "head_shoulders", "upper_body", "half_body", "full_body", "unknown"},
         "orientation": {"front", "three_quarter_front", "side", "three_quarter_back", "back", "unknown"},
@@ -196,21 +167,18 @@ def _strict_analysis(data: dict) -> dict:
     for field_name, allowed_values in enum_fields.items():
         value = str(tags.get(field_name, "unknown"))
         normalized_tags[field_name] = value if value in allowed_values else "unknown"
-
     looking_at_camera = tags.get("looking_at_camera", False)
     if not isinstance(looking_at_camera, bool):
         raise ValueError("visual_tags.looking_at_camera must be boolean")
     normalized_tags["looking_at_camera"] = looking_at_camera
     data["visual_tags"] = normalized_tags
-
     reason = str(data.get("reject_reason", "") or "")
     allowed = {"", "no_person", "blurry", "low_quality", "occluded", "person_too_small"}
     if reason not in allowed:
         reason = ""
-
     data["person_count"] = person_count
     data["reject_reason"] = reason
-    data["notes"] = str(data.get("notes", "") or "")[:1000]
+    data["notes"] = str(data.get("notes", "") or "")[:500]
     return data
 
 
@@ -219,8 +187,7 @@ def _parse_analysis(text: str, model_name: str) -> ImageAnalysis:
     if data is None:
         return ImageAnalysis.error_result("Model response was not valid JSON.", model_name)
     try:
-        data = _strict_analysis(data)
-        analysis = ImageAnalysis.from_dict(data)
+        analysis = ImageAnalysis.from_dict(_strict_analysis(data))
     except Exception as exc:
         return ImageAnalysis.error_result(f"Invalid analysis JSON: {exc}", model_name)
     analysis.raw_response = text
@@ -228,7 +195,7 @@ def _parse_analysis(text: str, model_name: str) -> ImageAnalysis:
     return analysis
 
 
-def _encode_image_b64(path: str, max_dimension: int = 1600) -> str:
+def _encode_image_b64(path: str, max_dimension: int = 1280) -> str:
     from PIL import Image
     try:
         with Image.open(path) as original:
@@ -236,7 +203,7 @@ def _encode_image_b64(path: str, max_dimension: int = 1600) -> str:
             if max(image.size) > max_dimension:
                 image.thumbnail((max_dimension, max_dimension), Image.LANCZOS)
             buffer = io.BytesIO()
-            image.save(buffer, format="JPEG", quality=90, optimize=True)
+            image.save(buffer, format="JPEG", quality=88, optimize=True)
         payload = buffer.getvalue()
     except Exception:
         with open(path, "rb") as handle:
@@ -247,13 +214,10 @@ def _encode_image_b64(path: str, max_dimension: int = 1600) -> str:
 def _build_messages(img_b64: str) -> list[dict]:
     return [
         {"role": "system", "content": _SYSTEM_PROMPT},
-        {
-            "role": "user",
-            "content": [
-                {"type": "image_url", "image_url": {"url": img_b64}},
-                {"type": "text", "text": _USER_PROMPT},
-            ],
-        },
+        {"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": img_b64}},
+            {"type": "text", "text": _USER_PROMPT},
+        ]},
     ]
 
 
@@ -296,76 +260,43 @@ class VisionLLMEngine:
         for key, value in self.capabilities.items():
             logger.info("[vision] %-22s %s", key, value)
 
-    def load_model(
-        self,
-        model_path: str,
-        mmproj_path: str = "",
-        n_ctx: int = 4096,
-        n_gpu_layers: int = 0,
-        n_threads: int = 4,
-        n_threads_batch: int = 0,
-        progress_callback: Optional[Callable[[str], None]] = None,
-    ) -> None:
+    def load_model(self, model_path: str, mmproj_path: str = "", n_ctx: int = 4096, n_gpu_layers: int = 0,
+                   n_threads: int = 4, n_threads_batch: int = 0,
+                   progress_callback: Optional[Callable[[str], None]] = None) -> None:
         if not _llama_available:
             raise RuntimeError("llama-cpp-python is not installed.")
         if not Path(model_path).is_file():
             raise FileNotFoundError(f"Model not found: {model_path}")
         if not Path(mmproj_path).is_file():
             raise FileNotFoundError("A valid mmproj file is required for image analysis.")
-
+        effective_ctx = max(2048, int(n_ctx))
         with self._lock:
-            if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path:
-                logger.info(
-                    "[vision] MODEL REUSE | model=%s | mmproj=%s | instance_id=%s",
-                    Path(model_path).name,
-                    Path(mmproj_path).name,
-                    hex(id(self._model)),
-                )
+            if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path and self._model_ctx == effective_ctx:
+                logger.info("[vision] MODEL REUSE | model=%s | mmproj=%s | n_ctx=%d | instance_id=%s", Path(model_path).name, Path(mmproj_path).name, effective_ctx, hex(id(self._model)))
                 return
-
             load_started = time.perf_counter()
-            logger.info(
-                "[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d",
-                Path(model_path).name,
-                Path(mmproj_path).name,
-                n_ctx,
-                n_gpu_layers,
-                n_threads,
-            )
-
+            logger.info("[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | requested_n_ctx=%d | n_gpu_layers=%d | n_threads=%d", Path(model_path).name, Path(mmproj_path).name, effective_ctx, int(n_ctx), n_gpu_layers, n_threads)
             self._unload()
             self._capabilities = llama_features.detect_vision_capabilities(model_path)
             self.log_capabilities()
             caps = self._capabilities
-
             model_family = caps.get("model_family", "unknown")
             handler_name = caps.get("handler_class", "")
             if model_family == "gemma4" and handler_name != "Gemma4ChatHandler":
-                raise RuntimeError(
-                    "Gemma-4 was detected but Gemma4ChatHandler is unavailable in the installed "
-                    f"llama-cpp-python ({caps.get('version', 'unknown')}). "
-                    "Do not use Qwen25VLChatHandler for Gemma-4; install a llama-cpp-python build "
-                    "with Gemma4ChatHandler support."
-                )
-
+                raise RuntimeError("Gemma-4 was detected but Gemma4ChatHandler is unavailable in the installed llama-cpp-python.")
             extra: dict = {}
             if caps["flash_attn_param"]:
                 extra["flash_attn"] = True
             if n_threads_batch > 0 and caps["n_threads_batch_param"]:
                 extra["n_threads_batch"] = n_threads_batch
-
             if n_gpu_layers != 0:
                 gpu = _detect_gpu_info()
                 if gpu:
-                    logger.info(
-                        "[vision] GPU=%s | VRAM=%s/%s MiB | CC=%s",
-                        gpu["name"], gpu["mem_free"], gpu["mem_total"], gpu["compute_cap"],
-                    )
+                    logger.info("[vision] GPU=%s | VRAM=%s/%s MiB | CC=%s", gpu["name"], gpu["mem_free"], gpu["mem_total"], gpu["compute_cap"])
                     if _needs_mmq_fallback(gpu["name"]):
                         os.environ["GGML_CUDA_FORCE_MMQ"] = "1"
                         if caps["flash_attn_param"]:
                             extra["flash_attn"] = False
-
             mechanism = caps["vision_mechanism"]
             if mechanism == "chat_handler":
                 extra["chat_handler"] = _build_chat_handler(handler_name, mmproj_path)
@@ -374,88 +305,54 @@ class VisionLLMEngine:
             elif mechanism == "clip_model_path":
                 extra["clip_model_path"] = mmproj_path
             else:
-                raise RuntimeError(
-                    f"No usable multimodal vision mechanism for model family {model_family!r}."
-                )
-
+                raise RuntimeError(f"No usable multimodal vision mechanism for model family {model_family!r}.")
             if progress_callback:
                 progress_callback(f"Loading {Path(model_path).name}…")
-
-            kwargs = {
-                "model_path": model_path,
-                "n_ctx": n_ctx,
-                "n_gpu_layers": n_gpu_layers,
-                "n_threads": n_threads,
-                "verbose": False,
-                **extra,
-            }
+            kwargs = {"model_path": model_path, "n_ctx": effective_ctx, "n_gpu_layers": n_gpu_layers, "n_threads": n_threads, "verbose": False, **extra}
             try:
                 self._model = Llama(**kwargs)
             except TypeError as exc:
                 raise RuntimeError(f"llama-cpp-python rejected the vision configuration: {exc}") from exc
-
             self._model_path = model_path
             self._mmproj_path = mmproj_path
             self._model_name = Path(model_path).name
+            self._model_ctx = effective_ctx
             self._vision_ready = True
-            load_elapsed = time.perf_counter() - load_started
-            logger.info(
-                "[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | instance_id=%s",
-                self._model_name,
-                load_elapsed,
-                hex(id(self._model)),
-            )
+            logger.info("[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | instance_id=%s", self._model_name, time.perf_counter() - load_started, effective_ctx, hex(id(self._model)))
             if progress_callback:
                 progress_callback("Vision model ready.")
 
     def _unload(self) -> None:
+        if self._model is not None:
+            logger.info("[vision] MODEL UNLOAD INTERNAL | model=%s | instance_id=%s", self._model_name or "unknown", hex(id(self._model)))
         if self._model is not None:
             del self._model
         self._model = None
         self._model_path = ""
         self._mmproj_path = ""
         self._model_name = ""
+        self._model_ctx = 0
         self._vision_ready = False
 
     def unload(self) -> None:
         with self._lock:
             if self._model is not None:
-                logger.info(
-                    "[vision] MODEL UNLOAD | model=%s | instance_id=%s",
-                    self._model_name or "unknown",
-                    hex(id(self._model)),
-                )
+                logger.info("[vision] MODEL UNLOAD | model=%s | instance_id=%s", self._model_name or "unknown", hex(id(self._model)))
             self._unload()
             self._capabilities = None
 
-    def analyze_image(self, image_path: str, max_tokens: int = 800, temperature: float = 0.1) -> ImageAnalysis:
+    def analyze_image(self, image_path: str, max_tokens: int = 256, temperature: float = 0.1) -> ImageAnalysis:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
-
         image_name = Path(image_path).name
         total_started = time.perf_counter()
-
         preprocess_started = time.perf_counter()
         img_b64 = _encode_image_b64(image_path)
-        kwargs = {
-            "messages": _build_messages(img_b64),
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": 0.9,
-            "top_k": 40,
-            "stream": False,
-        }
+        kwargs = {"messages": _build_messages(img_b64), "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.9, "top_k": 40, "stream": False}
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
         preprocess_elapsed = time.perf_counter() - preprocess_started
-
-        logger.info(
-            "[vision] INFERENCE START | image=%s | model=%s | instance_id=%s",
-            image_name,
-            self._model_name,
-            hex(id(self._model)),
-        )
-
+        logger.info("[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | instance_id=%s", image_name, self._model_name, self._model_ctx, hex(id(self._model)))
         inference_started = time.perf_counter()
         with self._lock:
             try:
@@ -463,33 +360,15 @@ class VisionLLMEngine:
                 text = response["choices"][0]["message"]["content"] or ""
             except Exception as exc:
                 inference_elapsed = time.perf_counter() - inference_started
-                total_elapsed = time.perf_counter() - total_started
-                logger.error(
-                    "[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s",
-                    image_name,
-                    inference_elapsed,
-                    total_elapsed,
-                    exc,
-                )
+                logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s", image_name, inference_elapsed, time.perf_counter() - total_started, exc)
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
         inference_elapsed = time.perf_counter() - inference_started
         total_elapsed = time.perf_counter() - total_started
-
         usage = response.get("usage") or {}
-        prompt_tokens = usage.get("prompt_tokens", "?")
-        completion_tokens = usage.get("completion_tokens", "?")
-        logger.info(
-            "[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | inference=%.2fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s",
-            image_name,
-            preprocess_elapsed,
-            inference_elapsed,
-            total_elapsed,
-            prompt_tokens,
-            completion_tokens,
-        )
+        logger.info("[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | inference=%.2fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s", image_name, preprocess_elapsed, inference_elapsed, total_elapsed, usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"))
         return _parse_analysis(text, self._model_name)
 
-    def analyze_image_raw(self, image_path: str, max_tokens: int = 800, temperature: float = 0.1):
+    def analyze_image_raw(self, image_path: str, max_tokens: int = 256, temperature: float = 0.1):
         analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature)
         return analysis.raw_response, analysis
 

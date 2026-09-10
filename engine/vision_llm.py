@@ -56,7 +56,8 @@ Required fields:
   "reject": boolean,
   "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty"
 }
-Be conservative. gender_presentation is visual presentation only."""
+Be conservative. gender_presentation is visual presentation only.
+"""
 
 
 def _detect_gpu_info() -> Optional[dict]:
@@ -259,7 +260,7 @@ class VisionLLMEngine:
         for key, value in self.capabilities.items():
             logger.info("[vision] %-22s %s", key, value)
 
-    def load_model(self, model_path: str, mmproj_path: str = "", n_ctx: int = 4096, n_gpu_layers: int = 0,
+    def load_model(self, model_path: str, mmproj_path: str = "", n_ctx: int = 2048, n_gpu_layers: int = 0,
                    n_threads: int = 4, n_threads_batch: int = 0,
                    progress_callback: Optional[Callable[[str], None]] = None) -> None:
         if not _llama_available:
@@ -268,13 +269,15 @@ class VisionLLMEngine:
             raise FileNotFoundError(f"Model not found: {model_path}")
         if not Path(mmproj_path).is_file():
             raise FileNotFoundError("A valid mmproj file is required for image analysis.")
-        effective_ctx = max(2048, int(n_ctx))
+        configured_ctx = int(n_ctx)
+        if configured_ctx <= 0:
+            raise ValueError("Context must be greater than zero.")
         with self._lock:
-            if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path and self._model_ctx == effective_ctx:
-                logger.info("[vision] MODEL REUSE | model=%s | mmproj=%s | n_ctx=%d | instance_id=%s", Path(model_path).name, Path(mmproj_path).name, effective_ctx, hex(id(self._model)))
+            if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path and self._model_ctx == configured_ctx:
+                logger.info("[vision] MODEL REUSE | model=%s | mmproj=%s | n_ctx=%d | instance_id=%s", Path(model_path).name, Path(mmproj_path).name, configured_ctx, hex(id(self._model)))
                 return
             load_started = time.perf_counter()
-            logger.info("[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | requested_n_ctx=%d | n_gpu_layers=%d | n_threads=%d", Path(model_path).name, Path(mmproj_path).name, effective_ctx, int(n_ctx), n_gpu_layers, n_threads)
+            logger.info("[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d", Path(model_path).name, Path(mmproj_path).name, configured_ctx, n_gpu_layers, n_threads)
             self._unload()
             self._capabilities = llama_features.detect_vision_capabilities(model_path)
             self.log_capabilities()
@@ -307,7 +310,7 @@ class VisionLLMEngine:
                 raise RuntimeError(f"No usable multimodal vision mechanism for model family {model_family!r}.")
             if progress_callback:
                 progress_callback(f"Loading {Path(model_path).name}…")
-            kwargs = {"model_path": model_path, "n_ctx": effective_ctx, "n_gpu_layers": n_gpu_layers, "n_threads": n_threads, "verbose": False, **extra}
+            kwargs = {"model_path": model_path, "n_ctx": configured_ctx, "n_gpu_layers": n_gpu_layers, "n_threads": n_threads, "verbose": False, **extra}
             try:
                 self._model = Llama(**kwargs)
             except TypeError as exc:
@@ -315,9 +318,9 @@ class VisionLLMEngine:
             self._model_path = model_path
             self._mmproj_path = mmproj_path
             self._model_name = Path(model_path).name
-            self._model_ctx = effective_ctx
+            self._model_ctx = configured_ctx
             self._vision_ready = True
-            logger.info("[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | instance_id=%s", self._model_name, time.perf_counter() - load_started, effective_ctx, hex(id(self._model)))
+            logger.info("[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | instance_id=%s", self._model_name, time.perf_counter() - load_started, configured_ctx, hex(id(self._model)))
             if progress_callback:
                 progress_callback("Vision model ready.")
 
@@ -347,19 +350,11 @@ class VisionLLMEngine:
         total_started = time.perf_counter()
         preprocess_started = time.perf_counter()
         img_b64 = _encode_image_b64(image_path)
-        kwargs = {
-            "messages": _build_messages(img_b64),
-            "max_tokens": max_tokens,
-            "temperature": temperature,
-            "top_p": 0.9,
-            "top_k": 40,
-            "stream": False,
-        }
+        kwargs = {"messages": _build_messages(img_b64), "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.9, "top_k": 40, "stream": False}
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
         preprocess_elapsed = time.perf_counter() - preprocess_started
         logger.info("[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | temperature=%.2f | instance_id=%s", image_name, self._model_name, self._model_ctx, max_tokens, temperature, hex(id(self._model)))
-
         inference_started = time.perf_counter()
         with self._lock:
             try:
@@ -370,23 +365,12 @@ class VisionLLMEngine:
                 logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s", image_name, inference_elapsed, time.perf_counter() - total_started, exc)
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
         inference_elapsed = time.perf_counter() - inference_started
-
         parse_started = time.perf_counter()
         analysis = _parse_analysis(text, self._model_name)
         parse_elapsed = time.perf_counter() - parse_started
         total_elapsed = time.perf_counter() - total_started
         usage = response.get("usage") or {}
-        logger.info(
-            "[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s | response_chars=%d",
-            image_name,
-            preprocess_elapsed,
-            inference_elapsed,
-            parse_elapsed,
-            total_elapsed,
-            usage.get("prompt_tokens", "?"),
-            usage.get("completion_tokens", "?"),
-            len(text),
-        )
+        logger.info("[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s | response_chars=%d", image_name, preprocess_elapsed, inference_elapsed, parse_elapsed, total_elapsed, usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"), len(text))
         return analysis
 
     def analyze_image_raw(self, image_path: str, max_tokens: int = 192, temperature: float = 0.0):

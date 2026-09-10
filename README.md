@@ -30,9 +30,9 @@ Aplicación de requisitos del usuario
         ↓
 Diversidad / eliminación de similares
         ↓
-Selección de las mejores N
+Selección + optimización de layout
         ↓
-Crop dinámico definido por coordenadas
+Crop dinámico definido por coordenadas + zoom
         ↓
 mosaic.json
 ```
@@ -54,6 +54,7 @@ AI-Mosaic-Builder/
 │   ├── llama_features.py   # Detección de capacidades llama.cpp
 │   ├── image_analyzer.py   # Descubrimiento y pipeline de análisis
 │   ├── ranking.py          # Puntuación, requisitos y selección
+│   ├── layout_optimizer.py # Cantidad AUTO, zoom y packing
 │   ├── cache.py            # Cache por SHA-256
 │   ├── models.py           # Dataclasses y modelos de datos
 │   ├── session.py          # Persistencia de sesiones
@@ -160,8 +161,6 @@ Se pueden pedir cantidades mínimas de:
 Ejemplo:
 
 ```text
-Target Images: 12
-
 Face only:     1
 Full body:     2
 Back:          1
@@ -222,6 +221,68 @@ PREFERRED
 
 Si una receta solicita, por ejemplo, 3 fotografías de espalda y solo existen 1 o 2 candidatas válidas, el selector no inventa fotografías. Registra el requisito no satisfecho en el log y utiliza las mejores candidatas restantes.
 
+## Optimización automática del mosaico
+
+`Target Images = Automatic` es el modo pensado para que el usuario no tenga que decidir cuántas fotos caben.
+
+En este modo, AI Mosaic Builder no usa un número fijo como 12 o 20. Para cada conjunto candidato simula el comportamiento de empaquetado de `ImageMosaicView` y calcula:
+
+- tamaño real del crop de cada persona;
+- tamaño del sujeto dentro del crop;
+- zoom individual recomendado;
+- espacio disponible del canvas;
+- solapamiento con imágenes ya colocadas;
+- cantidad máxima de imágenes que puede incluir manteniendo un tamaño legible;
+- uso total del canvas.
+
+`ImageMosaicView` busca posiciones con un barrido de 10 px y, cuando un elemento no cabe, reduce su zoom en pasos de `0.9`. El optimizador reproduce esa regla para que el JSON exportado tenga un resultado predecible al abrirse en el viewer.
+
+La diferencia importante es que AUTO no empieza todas las imágenes en `zoom = 0.5`. Primero calcula un zoom basado en el tamaño del sujeto y después busca el mayor nivel de zoom que todavía permite colocar el conjunto completo.
+
+Esto permite comportamientos como:
+
+```text
+Face crop pequeño
+→ zoom mayor
+→ rostro visible y aprovechado
+
+Full body grande
+→ zoom menor
+→ cuerpo completo sin ocupar todo el canvas
+```
+
+El optimizador también ordena los elementos por huella esperada para reducir fragmentación del espacio. La posición no se guarda en el JSON: el viewer la vuelve a calcular dinámicamente.
+
+### Ejemplo conceptual
+
+```text
+Canvas: 1080 × 960
+
+300 fotos encontradas
+        ↓
+120 candidatas después de requisitos/ranking
+        ↓
+AUTO prueba diferentes cantidades
+        ↓
+para cada cantidad:
+    calcula crop
+    calcula zoom
+    simula packing
+    mide espacio utilizado
+    comprueba tamaño del sujeto
+        ↓
+elige el layout más útil
+        ↓
+por ejemplo: 14 imágenes
+con zooms diferentes
+```
+
+La cantidad final no debe interpretarse como un límite rígido universal: depende de las dimensiones del canvas, las proporciones de los crops, los sujetos detectados, los requisitos y la calidad de las candidatas.
+
+### Modo manual
+
+Si el usuario selecciona un número concreto, por ejemplo `12`, ese número se trata como una cantidad exacta solicitada. El sistema optimiza el zoom y el packing para esas 12 fotos, pero no cambia silenciosamente la cantidad a otra.
+
 ## Detección de personas
 
 El análisis del LLM y la detección física de la persona son capas separadas.
@@ -245,7 +306,9 @@ preferencias
   ↓
 diversidad
   ↓
-mejores N
+optimización de layout
+  ↓
+mejores imágenes para el canvas
 ```
 
 La etapa de diversidad evita seleccionar muchas fotografías prácticamente iguales.
@@ -310,7 +373,7 @@ Entre ellos están:
 - contexto;
 - capas GPU;
 - threads;
-- número objetivo de imágenes;
+- número objetivo de imágenes o `Automatic`;
 - dimensiones del canvas;
 - padding;
 - threshold de detección;
@@ -332,7 +395,7 @@ Solo guarda el proyecto JSON con:
 - `type`;
 - `filename` de la imagen original;
 - `coords` relativas del crop;
-- `zoom`;
+- `zoom` calculado para ese elemento;
 - `canvas_size`.
 
 Ejemplo:
@@ -343,8 +406,8 @@ Ejemplo:
     "type": "body",
     "filename": "evento/juan.jpg",
     "coords": [0.15, 0.08, 0.61, 0.94],
-    "zoom": 0.5,
-    "canvas_size": [3840, 2160]
+    "zoom": 0.73,
+    "canvas_size": [1080, 960]
   }
 ]
 ```
@@ -370,6 +433,8 @@ analiza fotos
         ↓
 selecciona las mejores según la receta
         ↓
+optimiza cantidad + zoom
+        ↓
 genera mosaic.json
         ↓
 ImageMosaicView
@@ -377,6 +442,8 @@ ImageMosaicView
 lee las fotos originales
         ↓
 reconstruye los crops dinámicamente
+        ↓
+recalcula las posiciones del packing
         ↓
 renderiza el mosaico
 ```
@@ -409,7 +476,7 @@ python -m pip install -r requirements.txt
 2. Seleccionar `Source Folder`.
 3. Seleccionar el modelo GGUF multimodal.
 4. Seleccionar el `mmproj` correspondiente.
-5. Configurar `Target Images`.
+5. Seleccionar `Automatic` para que el programa determine la cantidad de imágenes, o indicar una cantidad fija.
 6. Definir los requisitos y preferencias del mosaico.
 7. Pulsar `Analyze`.
 8. Revisar las imágenes, scores, detecciones y atributos visuales.
@@ -441,7 +508,7 @@ No se considera válida una configuración que simplemente simule la entrada de 
 
 ## Estado actual
 
-El proyecto se encuentra en desarrollo activo. La arquitectura principal, el análisis multimodal, el cache por carpeta, el ranking, la detección de personas, la receta de selección y la exportación JSON están separados en módulos para permitir seguir mejorando cada etapa sin acoplarlas entre sí.
+El proyecto se encuentra en desarrollo activo. La arquitectura principal, el análisis multimodal, el cache por carpeta, el ranking, la detección de personas, la receta de selección, la optimización de layout y la exportación JSON están separados en módulos para permitir seguir mejorando cada etapa sin acoplarlas entre sí.
 
 ## Principios del proyecto
 
@@ -454,3 +521,4 @@ El proyecto se encuentra en desarrollo activo. La arquitectura principal, el an�
 - El formato de exportación debe respetar el contrato real del visualizador que lo consume.
 - Los requisitos obligatorios tienen prioridad sobre el ranking simple.
 - Los atributos inciertos se marcan como `unknown` en vez de inventarse.
+- AUTO debe optimizar el aprovechamiento del canvas y el tamaño visible del sujeto, no usar un zoom fijo.

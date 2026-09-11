@@ -35,6 +35,7 @@ class SettingsPanel(QWidget):
 
     settings_changed = Signal(object)
     open_folder_requested = Signal()
+    exclude_folders_requested = Signal()
     analyze_requested = Signal()
     stop_requested = Signal()
     generate_requested = Signal()
@@ -61,6 +62,7 @@ class SettingsPanel(QWidget):
         workflow_layout.setVerticalSpacing(6)
 
         self._btn_open_folder = QPushButton("📂  Open Folder")
+        self._btn_exclude_folders = QPushButton("🚫  Exclude Folders")
         self._btn_analyze = QPushButton("▶  Analyze")
         self._btn_stop = QPushButton("■  Stop")
         self._btn_generate = QPushButton("🖼  Generate Mosaic")
@@ -72,19 +74,22 @@ class SettingsPanel(QWidget):
         self._btn_generate.setObjectName("success_btn")
         self._btn_export_mosaic.setObjectName("success_btn")
 
+        self._btn_exclude_folders.setEnabled(False)
         self._btn_stop.setEnabled(False)
         self._btn_generate.setEnabled(False)
         self._btn_preview.setEnabled(False)
         self._btn_export_mosaic.setEnabled(False)
 
         self._btn_open_folder.clicked.connect(self.open_folder_requested.emit)
+        self._btn_exclude_folders.clicked.connect(self.exclude_folders_requested.emit)
         self._btn_analyze.clicked.connect(self.analyze_requested.emit)
         self._btn_stop.clicked.connect(self.stop_requested.emit)
         self._btn_generate.clicked.connect(self.generate_requested.emit)
         self._btn_preview.clicked.connect(self.preview_requested.emit)
         self._btn_export_mosaic.clicked.connect(self.export_mosaic_requested.emit)
 
-        workflow_layout.addWidget(self._btn_open_folder, 0, 0, 1, 2)
+        workflow_layout.addWidget(self._btn_open_folder, 0, 0)
+        workflow_layout.addWidget(self._btn_exclude_folders, 0, 1)
         workflow_layout.addWidget(self._btn_analyze, 1, 0)
         workflow_layout.addWidget(self._btn_stop, 1, 1)
         workflow_layout.addWidget(self._btn_generate, 2, 0, 1, 2)
@@ -333,6 +338,7 @@ class SettingsPanel(QWidget):
 
     def _populate(self, s: AppSettings) -> None:
         self._folder_edit.setText(s.last_source_folder)
+        self._btn_exclude_folders.setEnabled(bool(s.last_source_folder and os.path.isdir(s.last_source_folder)))
         self._model_edit.setText(s.model_path)
         self._mmproj_edit.setText(s.mmproj_path)
         self._gpu_spin.setValue(s.n_gpu_layers)
@@ -440,15 +446,20 @@ class SettingsPanel(QWidget):
         self._building = True
         self._folder_edit.setText(folder)
         self._building = False
+        self._btn_exclude_folders.setEnabled(bool(folder and os.path.isdir(folder)))
 
     def set_analyzing(self, active: bool) -> None:
         self._btn_open_folder.setEnabled(not active)
+        self._btn_exclude_folders.setEnabled(not active and bool(self._folder_edit.text().strip()) and os.path.isdir(self._folder_edit.text().strip()))
         self._btn_analyze.setEnabled(not active)
         self._btn_stop.setEnabled(active)
         if active:
             self._btn_generate.setEnabled(False)
             self._btn_preview.setEnabled(False)
             self._btn_export_mosaic.setEnabled(False)
+
+    def set_exclude_folders_enabled(self, enabled: bool) -> None:
+        self._btn_exclude_folders.setEnabled(bool(enabled) and bool(self._folder_edit.text().strip()) and os.path.isdir(self._folder_edit.text().strip()))
 
     def set_generate_enabled(self, enabled: bool) -> None:
         self._btn_generate.setEnabled(bool(enabled))

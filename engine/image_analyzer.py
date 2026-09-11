@@ -39,21 +39,58 @@ _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", 
 _MIN_FILE_SIZE = 1024
 
 
-def discover_images(folder: str) -> list[str]:
-    """Recursively find all image files under folder."""
-    folder_path = Path(folder)
+def _normalize_excluded_folder(value: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    return text.strip("/")
+
+
+def discover_images(folder: str, excluded_folders: list[str] | None = None) -> list[str]:
+    """Recursively find image files under folder, skipping excluded subfolders."""
+    folder_path = Path(folder).expanduser().resolve()
     if not folder_path.is_dir():
         logger.error(f"[analyzer] Not a directory: {folder}")
         return []
 
-    found = []
-    for root, _dirs, files in os.walk(folder_path):
+    excluded = {
+        _normalize_excluded_folder(value)
+        for value in (excluded_folders or [])
+        if _normalize_excluded_folder(value) not in {"", "."}
+    }
+
+    found: list[str] = []
+    for root, dirs, files in os.walk(folder_path):
+        root_path = Path(root)
+        try:
+            relative_root = root_path.relative_to(folder_path).as_posix()
+        except ValueError:
+            relative_root = ""
+
+        # Prune excluded directories before os.walk descends into them.
+        kept_dirs: list[str] = []
+        for name in dirs:
+            child_relative = f"{relative_root}/{name}".strip("/") if relative_root else name
+            child_normalized = _normalize_excluded_folder(child_relative)
+            if any(
+                child_normalized == excluded_path
+                or child_normalized.startswith(excluded_path + "/")
+                for excluded_path in excluded
+            ):
+                logger.debug("[analyzer] Skipping excluded folder: %s", child_relative)
+                continue
+            kept_dirs.append(name)
+        dirs[:] = kept_dirs
+
         for name in files:
             if Path(name).suffix.lower() in _IMAGE_EXTENSIONS:
-                found.append(str(Path(root) / name))
+                found.append(str(root_path / name))
 
     found.sort()
-    logger.info(f"[analyzer] Discovered {len(found)} image file(s) in {folder}")
+    logger.info(
+        f"[analyzer] Discovered {len(found)} image file(s) in {folder} "
+        f"(excluded_folders={len(excluded)})"
+    )
     return found
 
 

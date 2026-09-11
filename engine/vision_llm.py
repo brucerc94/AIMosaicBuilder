@@ -348,21 +348,21 @@ class VisionLLMEngine:
                 "n_ctx": configured_ctx,
                 "n_gpu_layers": n_gpu_layers,
                 "n_threads": n_threads,
-                "verbose": False,
+                "verbose": True,
                 **extra,
             }
             # Log every effective kwarg so we can verify parity with AIStoryWriter
             logger.info(
                 "[vision] EFFECTIVE LLAMA KWARGS: n_ctx=%d n_gpu_layers=%d n_threads=%d "
                 "n_threads_batch=%s n_batch=%s n_ubatch=%s flash_attn=%s "
-                "GGML_CUDA_FORCE_MMQ=%s mechanism=%s handler=%s",
+                "GGML_CUDA_FORCE_MMQ=%s mechanism=%s handler=%s verbose=%s",
                 configured_ctx, n_gpu_layers, n_threads,
                 extra.get("n_threads_batch", "not_set"),
                 extra.get("n_batch", "not_set"),
                 extra.get("n_ubatch", "not_set"),
                 extra.get("flash_attn", "not_set"),
                 os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
-                mechanism, handler_name,
+                mechanism, handler_name, True,
             )
             try:
                 self._model = Llama(**kwargs)
@@ -377,13 +377,13 @@ class VisionLLMEngine:
             logger.info(
                 "[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | n_gpu_layers=%d | "
                 "n_batch=%s | n_ubatch=%s | n_threads=%d | n_threads_batch=%s | flash_attn=%s | "
-                "GGML_CUDA_FORCE_MMQ=%s | instance_id=%s",
+                "GGML_CUDA_FORCE_MMQ=%s | instance_id=%s | verbose=%s",
                 self._model_name, elapsed, configured_ctx, n_gpu_layers,
                 extra.get("n_batch", "default"), extra.get("n_ubatch", "default"),
                 n_threads, extra.get("n_threads_batch", "default"),
                 extra.get("flash_attn", "default"),
                 os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
-                hex(id(self._model)),
+                hex(id(self._model)), True,
             )
             if progress_callback:
                 progress_callback("Vision model ready.")

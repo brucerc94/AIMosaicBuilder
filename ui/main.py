@@ -352,7 +352,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Generate Mosaic", "No valid mosaic candidates are available. Run Analyze first.")
             return
 
-        generation_settings = copy.deepcopy(self._settings)
+        # Read the controls at click time instead of relying only on the last
+        # settings_changed signal. This guarantees that the latest Target Images
+        # value (including 0 = AUTO) is what reaches the generation worker.
+        current_settings = self.settings_panel.current_settings()
+        self._settings = current_settings
+        configure_vision_engine(self._engine, self._settings)
+        if self._settings.last_source_folder:
+            self._cache = self._get_cache_for_source(self._settings.last_source_folder)
+        save_settings(self._settings)
+
+        generation_settings = copy.deepcopy(current_settings)
+        requested_target = max(0, int(generation_settings.target_images))
         worker = GenerateMosaicWorker(list(self._records), generation_settings)
         worker.signals.progress.connect(self._summary.setText)
         worker.signals.finished.connect(self._on_generate_finished)
@@ -362,7 +373,15 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
         self.settings_panel.set_export_mosaic_enabled(False)
-        self._summary.setText("Preparing mosaic recipe…")
+        if requested_target == 0:
+            self._summary.setText("Preparing automatic mosaic layout…")
+        else:
+            self._summary.setText(f"Preparing mosaic layout for {requested_target} images…")
+        logger.info(
+            "[generate] requested_target=%d mode=%s",
+            requested_target,
+            "AUTO" if requested_target == 0 else "FIXED",
+        )
         self._pool.start(worker)
 
     def _on_generate_finished(

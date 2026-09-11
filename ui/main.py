@@ -18,6 +18,7 @@ from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
 from ui.image_detail import ImageDetailPanel
 from ui.image_grid import ImageGrid
+from ui.preview import PreviewWindow
 from ui.settings_extended import SettingsPanel
 from ui.styles import DARK_STYLESHEET
 from ui.workers import AnalysisWorker, GenerateMosaicWorker, ModelLoaderWorker, PostProcessWorker
@@ -44,6 +45,7 @@ class MainWindow(QMainWindow):
         self._analysis_worker = None
         self._post_worker = None
         self._generate_worker = None
+        self._preview_window: PreviewWindow | None = None
 
         self._build_ui()
         self._connect()
@@ -85,6 +87,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.analyze_requested.connect(self._start_analysis)
         self.settings_panel.stop_requested.connect(self._stop)
         self.settings_panel.generate_requested.connect(self._generate_project)
+        self.settings_panel.preview_requested.connect(self._show_preview)
         self.grid.image_selected.connect(self.details.show_record)
         self.grid.include_toggled.connect(self._toggle_include)
         self.grid.exclude_toggled.connect(self._toggle_exclude)
@@ -128,6 +131,7 @@ class MainWindow(QMainWindow):
         self.details.clear()
         self.settings_panel.set_analyzing(True)
         self.settings_panel.set_generate_enabled(False)
+        self.settings_panel.set_preview_enabled(False)
         self._summary.setText(f"Loading vision model… {len(self._paths)} images")
 
         worker = ModelLoaderWorker(self._engine, str(model), str(mmproj), self._settings)
@@ -173,6 +177,7 @@ class MainWindow(QMainWindow):
         self.grid.load_records(records)
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(False)
         if self._settings.last_source_folder:
             save_session(self._settings.last_source_folder, records)
         self._update_summary()
@@ -216,6 +221,7 @@ class MainWindow(QMainWindow):
         record.manually_included = not record.manually_included
         if record.manually_included:
             record.manually_excluded = False
+        self.settings_panel.set_preview_enabled(False)
         self._rerank_without_detection()
         self.details.show_record(record)
 
@@ -225,6 +231,7 @@ class MainWindow(QMainWindow):
         record.manually_excluded = not record.manually_excluded
         if record.manually_excluded:
             record.manually_included = False
+        self.settings_panel.set_preview_enabled(False)
         self._rerank_without_detection()
         self.details.show_record(record)
 
@@ -249,8 +256,6 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Generate Mosaic", "No valid mosaic candidates are available. Run Analyze first.")
             return
 
-        # Snapshot settings so changing the UI during a generation cannot mutate
-        # the active optimization job.
         generation_settings = copy.deepcopy(self._settings)
         worker = GenerateMosaicWorker(list(self._records), generation_settings)
         worker.signals.progress.connect(self._summary.setText)
@@ -259,6 +264,7 @@ class MainWindow(QMainWindow):
         worker.signals.error.connect(self._on_generate_error)
         self._generate_worker = worker
         self.settings_panel.set_generate_enabled(False)
+        self.settings_panel.set_preview_enabled(False)
         self._summary.setText("Preparing mosaic recipe…")
         self._pool.start(worker)
 
@@ -275,6 +281,7 @@ class MainWindow(QMainWindow):
         self._records = records
         self.grid.load_records(records)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(bool(self._selected_records()))
         self._update_summary()
         QMessageBox.information(
             self,
@@ -282,15 +289,42 @@ class MainWindow(QMainWindow):
             f"Saved to:\n{path}\n\nMode: {mode}\nImages: {image_count}\nCanvas fill: {canvas_fill:.1%}\nAverage zoom: {average_zoom:.3f}",
         )
 
+    def _show_preview(self) -> None:
+        selected = self._selected_records()
+        if not selected:
+            QMessageBox.warning(self, "Preview", "Generate a mosaic first to create a preview.")
+            self.settings_panel.set_preview_enabled(False)
+            return
+
+        if self._preview_window is not None:
+            try:
+                self._preview_window.close()
+            except Exception:
+                pass
+            self._preview_window = None
+
+        self._preview_window = PreviewWindow(
+            selected,
+            canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+            padding_px=self._settings.padding_px,
+            parent=self,
+        )
+        self._preview_window.finished.connect(lambda _result: setattr(self, "_preview_window", None))
+        self._preview_window.show()
+        self._preview_window.raise_()
+        self._preview_window.activateWindow()
+
     def _on_generate_cancelled(self) -> None:
         self._generate_worker = None
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(False)
         self._update_summary()
         self._summary.setText("Mosaic generation cancelled")
 
     def _on_generate_error(self, message: str) -> None:
         self._generate_worker = None
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(False)
         self._update_summary()
         QMessageBox.critical(self, "Generate failed", message)
 
@@ -301,10 +335,17 @@ class MainWindow(QMainWindow):
         self._generate_worker = None
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(False)
+        self.settings_panel.set_preview_enabled(False)
         self._summary.setText("Error")
         QMessageBox.critical(self, "AI Mosaic Builder", message)
 
     def closeEvent(self, event) -> None:
+        if self._preview_window is not None:
+            try:
+                self._preview_window.close()
+            except Exception:
+                pass
+            self._preview_window = None
         save_settings(self._settings)
         if self._settings.last_source_folder and self._records:
             save_session(self._settings.last_source_folder, self._records)

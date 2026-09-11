@@ -193,6 +193,21 @@ class GenerateMosaicWorker(QRunnable):
     def cancel(self) -> None:
         self._cancelled = True
 
+    def _reset_previous_layout_state(self) -> None:
+        """Discard only generated layout state before recomputing from current user choices.
+
+        Manual include/exclude flags are intentionally preserved. The previous
+        SELECTED/selection values belong to the old layout and must never bias a
+        subsequent Generate Mosaic run.
+        """
+        cleared = 0
+        for record in self._records:
+            if record.status == ImageStatus.SELECTED or record.selection is not None:
+                cleared += 1
+                record.status = ImageStatus.ANALYZED if record.analysis else ImageStatus.PENDING
+                record.selection = None
+        logger.info("[generate] reset previous layout state | cleared=%d | manual choices preserved", cleared)
+
     def run(self) -> None:
         try:
             if self._cancelled:
@@ -203,6 +218,9 @@ class GenerateMosaicWorker(QRunnable):
             requirements = self._settings.mosaic_requirements
             self.signals.progress.emit("Preparing mosaic recipe…")
 
+            # Generate Mosaic is a fresh layout pass. A previous generated layout
+            # must never constrain the new selection after manual include/exclude edits.
+            self._reset_previous_layout_state()
             ranked = rank_records(
                 self._records,
                 self._settings.ranking_weights,

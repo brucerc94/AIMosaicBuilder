@@ -30,18 +30,15 @@ _PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "image_analy
 
 
 def _load_analysis_prompt() -> tuple[str, str]:
-    """Load the editable system/user vision prompt from the repository text file."""
     try:
         text = _PROMPT_PATH.read_text(encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"Vision analysis prompt not found: {_PROMPT_PATH}") from exc
-
     system_marker = "[SYSTEM]\n"
     user_marker = "\n[USER]\n"
     if not text.startswith(system_marker) or user_marker not in text:
         raise RuntimeError(
-            f"Invalid vision analysis prompt format in {_PROMPT_PATH}. "
-            "Expected [SYSTEM] and [USER] sections."
+            f"Invalid vision analysis prompt format in {_PROMPT_PATH}. Expected [SYSTEM] and [USER] sections."
         )
     system_prompt, user_prompt = text[len(system_marker):].split(user_marker, 1)
     system_prompt = system_prompt.strip()
@@ -65,7 +62,12 @@ def _detect_gpu_info() -> Optional[dict]:
         parts = [p.strip() for p in result.stdout.splitlines()[0].split(",")]
         if len(parts) < 4:
             return None
-        return {"name": parts[0], "mem_total": int(float(parts[1])), "mem_free": int(float(parts[2])), "compute_cap": parts[3]}
+        return {
+            "name": parts[0],
+            "mem_total": int(float(parts[1])),
+            "mem_free": int(float(parts[2])),
+            "compute_cap": parts[3],
+        }
     except Exception:
         return None
 
@@ -130,8 +132,12 @@ def _extract_json(text: str) -> Optional[dict]:
 
 
 def _strict_analysis(data: dict) -> dict:
-    required_bools = ("has_person", "main_subject_is_person", "face_visible", "body_visible", "occluded", "reject")
-    required_numbers = ("person_visibility", "blur", "composition", "image_quality", "subject_quality", "mosaic_value")
+    required_bools = (
+        "has_person", "main_subject_is_person", "face_visible", "body_visible", "occluded", "reject"
+    )
+    required_numbers = (
+        "person_visibility", "blur", "composition", "image_quality", "subject_quality", "mosaic_value"
+    )
     for field in required_bools:
         if not isinstance(data.get(field), bool):
             raise ValueError(f"{field} must be boolean")
@@ -158,19 +164,23 @@ def _strict_analysis(data: dict) -> dict:
         "framing": {"face_only", "head_shoulders", "upper_body", "half_body", "full_body", "unknown"},
         "orientation": {"front", "three_quarter_front", "side", "three_quarter_back", "back", "unknown"},
         "gender_presentation": {"male", "female", "unknown"},
-        "content_rating": {"safe", "suggestive", "explicit", "unknown"},
+        "content_rating": {"safe", "nsfw", "suggestive", "explicit", "unknown"},
         "pose": {"standing", "seated", "lying", "walking", "other", "unknown"},
     }
     normalized_tags: dict[str, object] = {}
     for field_name, allowed_values in enum_fields.items():
-        value = str(tags.get(field_name, "unknown"))
+        value = str(tags.get(field_name, "unknown")).lower()
+        if field_name == "content_rating" and value == "nsfw":
+            # Keep the internal legacy representation so existing ranking/cache
+            # logic remains compatible. The raw model response still contains NSFW.
+            value = "explicit"
         normalized_tags[field_name] = value if value in allowed_values else "unknown"
     looking_at_camera = tags.get("looking_at_camera", False)
     if not isinstance(looking_at_camera, bool):
         raise ValueError("visual_tags.looking_at_camera must be boolean")
     normalized_tags["looking_at_camera"] = looking_at_camera
-    normalized_tags["user_request_score"] = user_request_score
     data["visual_tags"] = normalized_tags
+
     reason = str(data.get("reject_reason", "") or "")
     allowed = {"", "no_person", "blurry", "low_quality", "occluded", "person_too_small"}
     if reason not in allowed:
@@ -275,10 +285,18 @@ class VisionLLMEngine:
         for key, value in self.capabilities.items():
             logger.info("[vision] %-22s %s", key, value)
 
-    def load_model(self, model_path: str, mmproj_path: str = "", n_ctx: int = 2048, n_gpu_layers: int = 0,
-                   n_threads: int = 4, n_threads_batch: int = 0,
-                   n_batch: int = 512, n_ubatch: int = 512,
-                   progress_callback: Optional[Callable[[str], None]] = None) -> None:
+    def load_model(
+        self,
+        model_path: str,
+        mmproj_path: str = "",
+        n_ctx: int = 2048,
+        n_gpu_layers: int = 0,
+        n_threads: int = 4,
+        n_threads_batch: int = 0,
+        n_batch: int = 512,
+        n_ubatch: int = 512,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> None:
         if not _llama_available:
             raise RuntimeError("llama-cpp-python is not installed.")
         if not Path(model_path).is_file():
@@ -289,12 +307,22 @@ class VisionLLMEngine:
         if configured_ctx <= 0:
             raise ValueError("Context must be greater than zero.")
         with self._lock:
-            if self._model is not None and self._model_path == model_path and self._mmproj_path == mmproj_path and self._model_ctx == configured_ctx:
-                logger.info("[vision] MODEL REUSE | model=%s | mmproj=%s | n_ctx=%d | instance_id=%s", Path(model_path).name, Path(mmproj_path).name, configured_ctx, hex(id(self._model)))
+            if (
+                self._model is not None
+                and self._model_path == model_path
+                and self._mmproj_path == mmproj_path
+                and self._model_ctx == configured_ctx
+            ):
+                logger.info(
+                    "[vision] MODEL REUSE | model=%s | mmproj=%s | n_ctx=%d | instance_id=%s",
+                    Path(model_path).name, Path(mmproj_path).name, configured_ctx, hex(id(self._model))
+                )
                 return
             load_started = time.perf_counter()
-            logger.info("[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d | n_batch=%d | n_ubatch=%d",
-                        Path(model_path).name, Path(mmproj_path).name, configured_ctx, n_gpu_layers, n_threads, n_batch, n_ubatch)
+            logger.info(
+                "[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d | n_batch=%d | n_ubatch=%d",
+                Path(model_path).name, Path(mmproj_path).name, configured_ctx, n_gpu_layers, n_threads, n_batch, n_ubatch,
+            )
             self._unload()
             self._capabilities = llama_features.detect_vision_capabilities(model_path)
             self.log_capabilities()
@@ -319,24 +347,16 @@ class VisionLLMEngine:
                         logger.info("[vision] GGML_CUDA_FORCE_MMQ=1 already in environment")
 
             if caps["flash_attn_param"]:
-                if mmq_forced:
-                    extra["flash_attn"] = False
-                    logger.info("[vision] flash_attn=False (MMQ fallback active)")
-                else:
-                    extra["flash_attn"] = True
-                    logger.info("[vision] flash_attn=True")
+                extra["flash_attn"] = not mmq_forced
+                logger.info("[vision] flash_attn=%s%s", extra["flash_attn"], " (MMQ fallback active)" if mmq_forced else "")
 
             effective_n_threads_batch = n_threads_batch if n_threads_batch > 0 else n_threads
             if caps["n_threads_batch_param"]:
                 extra["n_threads_batch"] = effective_n_threads_batch
-                logger.info("[vision] n_threads_batch=%d", effective_n_threads_batch)
-
             if caps["n_batch_param"]:
                 extra["n_batch"] = n_batch
-                logger.info("[vision] n_batch=%d", n_batch)
             if caps["n_ubatch_param"]:
                 extra["n_ubatch"] = n_ubatch
-                logger.info("[vision] n_ubatch=%d", n_ubatch)
 
             mechanism = caps["vision_mechanism"]
             if mechanism == "chat_handler":
@@ -350,7 +370,6 @@ class VisionLLMEngine:
 
             if progress_callback:
                 progress_callback(f"Loading {Path(model_path).name}…")
-
             kwargs = {
                 "model_path": model_path,
                 "n_ctx": configured_ctx,
@@ -360,16 +379,10 @@ class VisionLLMEngine:
                 **extra,
             }
             logger.info(
-                "[vision] EFFECTIVE LLAMA KWARGS: n_ctx=%d n_gpu_layers=%d n_threads=%d "
-                "n_threads_batch=%s n_batch=%s n_ubatch=%s flash_attn=%s "
-                "GGML_CUDA_FORCE_MMQ=%s mechanism=%s handler=%s verbose=%s",
+                "[vision] EFFECTIVE LLAMA KWARGS: n_ctx=%d n_gpu_layers=%d n_threads=%d n_threads_batch=%s n_batch=%s n_ubatch=%s flash_attn=%s GGML_CUDA_FORCE_MMQ=%s mechanism=%s handler=%s verbose=%s",
                 configured_ctx, n_gpu_layers, n_threads,
-                extra.get("n_threads_batch", "not_set"),
-                extra.get("n_batch", "not_set"),
-                extra.get("n_ubatch", "not_set"),
-                extra.get("flash_attn", "not_set"),
-                os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
-                mechanism, handler_name, False,
+                extra.get("n_threads_batch", "not_set"), extra.get("n_batch", "not_set"), extra.get("n_ubatch", "not_set"),
+                extra.get("flash_attn", "not_set"), os.environ.get("GGML_CUDA_FORCE_MMQ", "0"), mechanism, handler_name, False,
             )
             try:
                 self._model = Llama(**kwargs)
@@ -382,15 +395,11 @@ class VisionLLMEngine:
             self._vision_ready = True
             elapsed = time.perf_counter() - load_started
             logger.info(
-                "[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | n_gpu_layers=%d | "
-                "n_batch=%s | n_ubatch=%s | n_threads=%d | n_threads_batch=%s | flash_attn=%s | "
-                "GGML_CUDA_FORCE_MMQ=%s | instance_id=%s | verbose=%s",
+                "[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | n_gpu_layers=%d | n_batch=%s | n_ubatch=%s | n_threads=%d | n_threads_batch=%s | flash_attn=%s | GGML_CUDA_FORCE_MMQ=%s | instance_id=%s | verbose=%s",
                 self._model_name, elapsed, configured_ctx, n_gpu_layers,
-                extra.get("n_batch", "default"), extra.get("n_ubatch", "default"),
-                n_threads, extra.get("n_threads_batch", "default"),
-                extra.get("flash_attn", "default"),
-                os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
-                hex(id(self._model)), False,
+                extra.get("n_batch", "default"), extra.get("n_ubatch", "default"), n_threads,
+                extra.get("n_threads_batch", "default"), extra.get("flash_attn", "default"),
+                os.environ.get("GGML_CUDA_FORCE_MMQ", "0"), hex(id(self._model)), False,
             )
             if progress_callback:
                 progress_callback("Vision model ready.")
@@ -398,7 +407,6 @@ class VisionLLMEngine:
     def _unload(self) -> None:
         if self._model is not None:
             logger.info("[vision] MODEL UNLOAD INTERNAL | model=%s | instance_id=%s", self._model_name or "unknown", hex(id(self._model)))
-        if self._model is not None:
             del self._model
         self._model = None
         self._model_path = ""
@@ -414,19 +422,20 @@ class VisionLLMEngine:
             self._unload()
             self._capabilities = None
 
-    def analyze_image(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0,
-                      custom_prompt: str = "") -> ImageAnalysis:
+    def analyze_image(
+        self,
+        image_path: str,
+        max_tokens: int = 576,
+        temperature: float = 0.0,
+        custom_prompt: str = "",
+    ) -> ImageAnalysis:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
         image_name = Path(image_path).name
         total_started = time.perf_counter()
-
         preprocess_started = time.perf_counter()
         img_b64 = _encode_image_b64(image_path)
         preprocess_elapsed = time.perf_counter() - preprocess_started
-        logger.info("[vision] PREPROCESS | image=%s | encode=%.3fs | b64_bytes=%d",
-                    image_name, preprocess_elapsed, len(img_b64))
-
         request = custom_prompt.strip()[:2000]
         kwargs = {
             "messages": _build_messages(img_b64, request),
@@ -438,17 +447,12 @@ class VisionLLMEngine:
         }
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
-
         logger.info(
-            "[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | "
-            "custom_request=%s | temperature=%.2f | top_p=%.2f | top_k=%d | response_format=%s | instance_id=%s",
+            "[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | custom_request=%s | temperature=%.2f | top_p=%.2f | top_k=%d | response_format=%s | instance_id=%s",
             image_name, self._model_name, self._model_ctx, max_tokens,
-            "yes" if request else "no", temperature,
-            kwargs["top_p"], kwargs["top_k"],
-            kwargs.get("response_format", {}).get("type", "none"),
-            hex(id(self._model)),
+            "yes" if request else "no", temperature, kwargs["top_p"], kwargs["top_k"],
+            kwargs.get("response_format", {}).get("type", "none"), hex(id(self._model)),
         )
-
         inference_started = time.perf_counter()
         with self._lock:
             try:
@@ -456,41 +460,28 @@ class VisionLLMEngine:
                 text = response["choices"][0]["message"]["content"] or ""
             except Exception as exc:
                 inference_elapsed = time.perf_counter() - inference_started
-                logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s",
-                             image_name, inference_elapsed, time.perf_counter() - total_started, exc)
+                logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s", image_name, inference_elapsed, time.perf_counter() - total_started, exc)
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
         inference_elapsed = time.perf_counter() - inference_started
-
         parse_started = time.perf_counter()
         analysis = _parse_analysis(text, self._model_name)
         parse_elapsed = time.perf_counter() - parse_started
-
         total_elapsed = time.perf_counter() - total_started
         usage = response.get("usage") or {}
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
-
         total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
-        gen_tps = (completion_tokens / inference_elapsed) if (completion_tokens and inference_elapsed > 0) else 0.0
-        total_tps = (total_tokens / inference_elapsed) if (total_tokens and inference_elapsed > 0) else 0.0
-
+        gen_tps = (completion_tokens / inference_elapsed) if completion_tokens and inference_elapsed > 0 else 0.0
+        total_tps = (total_tokens / inference_elapsed) if total_tokens and inference_elapsed > 0 else 0.0
         logger.info(
-            "[vision] INFERENCE DONE | image=%s | preprocess=%.3fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | "
-            "prompt_tokens=%s | completion_tokens=%s | gen_toks/s=%.1f | total_toks/s=%.1f | response_chars=%d | custom_request=%s",
+            "[vision] INFERENCE DONE | image=%s | preprocess=%.3fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s | gen_toks/s=%.1f | total_toks/s=%.1f | response_chars=%d | custom_request=%s",
             image_name, preprocess_elapsed, inference_elapsed, parse_elapsed, total_elapsed,
-            prompt_tokens or "?", completion_tokens or "?",
-            gen_tps, total_tps, len(text), "yes" if request else "no",
+            prompt_tokens or "?", completion_tokens or "?", gen_tps, total_tps, len(text), "yes" if request else "no",
         )
         return analysis
 
-    def analyze_image_raw(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0,
-                          custom_prompt: str = ""):
-        analysis = self.analyze_image(
-            image_path,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            custom_prompt=custom_prompt,
-        )
+    def analyze_image_raw(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0, custom_prompt: str = ""):
+        analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature, custom_prompt=custom_prompt)
         return analysis.raw_response, analysis
 
 

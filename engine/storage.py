@@ -31,15 +31,18 @@ def load_settings() -> AppSettings:
         try:
             text = SETTINGS_FILE.read_text(encoding="utf-8")
             payload = json.loads(text)
+            if "n_ctx" not in payload:
+                payload["n_ctx"] = 4096
             settings = AppSettings.from_dict(payload)
             # max_tokens was added after the original dataclass schema; keep it
             # backward-compatible with existing settings.json files.
-            settings.max_tokens = max(64, min(4096, int(payload.get("max_tokens", 256))))
+            settings.max_tokens = max(64, min(4096, int(payload.get("max_tokens", 576))))
             return settings
         except Exception as e:
             logger.warning(f"[storage] Failed to load settings: {e} — using defaults")
     settings = AppSettings()
-    settings.max_tokens = 256
+    settings.n_ctx = 4096
+    settings.max_tokens = 576
     return settings
 
 
@@ -47,7 +50,8 @@ def save_settings(settings: AppSettings) -> None:
     ensure_data_dir()
     try:
         payload = settings.to_dict()
-        payload["max_tokens"] = max(64, min(4096, int(getattr(settings, "max_tokens", 256))))
+        payload["n_ctx"] = int(getattr(settings, "n_ctx", 4096))
+        payload["max_tokens"] = max(64, min(4096, int(getattr(settings, "max_tokens", 576))))
         SETTINGS_FILE.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",

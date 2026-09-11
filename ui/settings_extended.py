@@ -17,6 +17,7 @@ class SettingsPanel(BaseSettingsPanel):
     """Base settings panel plus persisted generation and mosaic preview controls."""
 
     preview_requested = Signal()
+    export_mosaic_requested = Signal()
     open_folder_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent=None) -> None:
@@ -28,6 +29,7 @@ class SettingsPanel(BaseSettingsPanel):
         self._max_tokens_spin.valueChanged.connect(self._on_max_tokens_changed)
         self._add_subject_size_controls(settings)
         self._add_preview_control()
+        self._add_export_mosaic_control()
         self._add_open_folder_control()
 
     def _add_max_tokens_control(self) -> None:
@@ -90,13 +92,7 @@ class SettingsPanel(BaseSettingsPanel):
         mosaic_group.layout().addRow("Target Subject Size:", self._target_subject_percent_spin)
 
     def _add_preview_control(self) -> None:
-        actions_group = next(
-            (group for group in self.findChildren(QGroupBox) if group.title() == "Actions"),
-            None,
-        )
-        if actions_group is None or actions_group.layout() is None:
-            raise RuntimeError("Could not locate Actions settings group.")
-
+        actions_group = self._actions_group()
         self._btn_preview = QPushButton("👁  Preview")
         self._btn_preview.setObjectName("preview_btn")
         self._btn_preview.setEnabled(False)
@@ -104,14 +100,17 @@ class SettingsPanel(BaseSettingsPanel):
         self._btn_preview.clicked.connect(self.preview_requested.emit)
         actions_group.layout().addWidget(self._btn_preview)
 
-    def _add_open_folder_control(self) -> None:
-        actions_group = next(
-            (group for group in self.findChildren(QGroupBox) if group.title() == "Actions"),
-            None,
-        )
-        if actions_group is None or actions_group.layout() is None:
-            raise RuntimeError("Could not locate Actions settings group.")
+    def _add_export_mosaic_control(self) -> None:
+        actions_group = self._actions_group()
+        self._btn_export_mosaic = QPushButton("🖼  Export Mosaic")
+        self._btn_export_mosaic.setObjectName("success_btn")
+        self._btn_export_mosaic.setEnabled(False)
+        self._btn_export_mosaic.setToolTip("Render the generated mosaic as a PNG, JPEG or WEBP image.")
+        self._btn_export_mosaic.clicked.connect(self.export_mosaic_requested.emit)
+        actions_group.layout().addWidget(self._btn_export_mosaic)
 
+    def _add_open_folder_control(self) -> None:
+        actions_group = self._actions_group()
         self._btn_open_folder = QPushButton("📂  Open Folder")
         self._btn_open_folder.setToolTip(
             "Open an image folder and load its existing cache without starting model analysis."
@@ -119,12 +118,25 @@ class SettingsPanel(BaseSettingsPanel):
         self._btn_open_folder.clicked.connect(self.open_folder_requested.emit)
         actions_group.layout().insertWidget(0, self._btn_open_folder)
 
+    def _actions_group(self) -> QGroupBox:
+        actions_group = next(
+            (group for group in self.findChildren(QGroupBox) if group.title() == "Actions"),
+            None,
+        )
+        if actions_group is None or actions_group.layout() is None:
+            raise RuntimeError("Could not locate Actions settings group.")
+        return actions_group
+
     def set_preview_enabled(self, enabled: bool) -> None:
         self._btn_preview.setEnabled(bool(enabled))
+
+    def set_export_mosaic_enabled(self, enabled: bool) -> None:
+        self._btn_export_mosaic.setEnabled(bool(enabled))
 
     def _on_changed(self, *args) -> None:
         if not self._building:
             self.set_preview_enabled(False)
+            self.set_export_mosaic_enabled(False)
         super()._on_changed(*args)
 
     def current_settings(self) -> AppSettings:
@@ -140,6 +152,7 @@ class SettingsPanel(BaseSettingsPanel):
     def _on_max_tokens_changed(self, *_args) -> None:
         if not self._building:
             self.set_preview_enabled(False)
+            self.set_export_mosaic_enabled(False)
             self.settings_changed.emit(self.current_settings())
 
     def _on_subject_size_changed(self, *_args) -> None:
@@ -150,6 +163,7 @@ class SettingsPanel(BaseSettingsPanel):
                 self._target_subject_percent_spin.setValue(min_value)
                 self._target_subject_percent_spin.blockSignals(False)
             self.set_preview_enabled(False)
+            self.set_export_mosaic_enabled(False)
             self.settings_changed.emit(self.current_settings())
 
     def set_source_folder(self, folder: str) -> None:

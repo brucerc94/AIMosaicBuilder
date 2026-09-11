@@ -18,6 +18,7 @@ from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
 from ui.image_detail import ImageDetailPanel
 from ui.image_grid import ImageGrid
+from ui.mosaic_export_worker import MosaicExportWorker
 from ui.preview import PreviewWindow
 from ui.settings_extended import SettingsPanel
 from ui.styles import DARK_STYLESHEET
@@ -45,6 +46,7 @@ class MainWindow(QMainWindow):
         self._analysis_worker = None
         self._post_worker = None
         self._generate_worker = None
+        self._export_worker = None
         self._preview_window: PreviewWindow | None = None
 
         self._build_ui()
@@ -89,6 +91,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.stop_requested.connect(self._stop)
         self.settings_panel.generate_requested.connect(self._generate_project)
         self.settings_panel.preview_requested.connect(self._show_preview)
+        self.settings_panel.export_mosaic_requested.connect(self._export_mosaic)
         self.grid.image_selected.connect(self.details.show_record)
         self.grid.include_toggled.connect(self._toggle_include)
         self.grid.exclude_toggled.connect(self._toggle_exclude)
@@ -104,7 +107,7 @@ class MainWindow(QMainWindow):
 
     def _open_folder(self) -> None:
         """Load a source folder and cached analysis without loading/invoking the model."""
-        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker:
+        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker or self._export_worker:
             return
 
         folder = QFileDialog.getExistingDirectory(
@@ -114,7 +117,6 @@ class MainWindow(QMainWindow):
         )
         if not folder:
             return
-
         self._load_source_folder(folder)
 
     def _load_source_folder(self, folder: str) -> None:
@@ -130,19 +132,16 @@ class MainWindow(QMainWindow):
 
         self._cache = self._get_cache_for_source(str(source))
         self._paths = discover_images(str(source))
-
         if not self._paths:
             self._records = []
             self.grid.clear()
             self.details.clear()
             self.settings_panel.set_generate_enabled(False)
             self.settings_panel.set_preview_enabled(False)
+            self.settings_panel.set_export_mosaic_enabled(False)
             self._summary.setText(f"No supported images found in {source}")
             return
 
-        # Populate the UI immediately from filesystem entries. Cached AI analysis
-        # is hydrated by stored source path; Analyze later validates cache by
-        # content hash before deciding whether model inference is required.
         model_hint = Path(self._settings.model_path).name if self._settings.model_path else ""
         records: list[ImageRecord] = []
         cache_hits = 0
@@ -171,6 +170,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._summary.setText(
             f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | Ready to Analyze"
         )
@@ -183,7 +183,7 @@ class MainWindow(QMainWindow):
         )
 
     def _start_analysis(self) -> None:
-        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker:
+        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker or self._export_worker:
             return
         folder = Path(self._settings.last_source_folder)
         model = Path(self._settings.model_path)
@@ -202,7 +202,8 @@ class MainWindow(QMainWindow):
         self._settings.cache_directory = str(source_cache_dir(folder))
         save_settings(self._settings)
 
-        self._paths = discover_images(str(folder))
+        if not self._paths:
+            self._paths = discover_images(str(folder))
         if not self._paths:
             QMessageBox.information(self, "Images", "No supported images were found.")
             return
@@ -213,6 +214,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_analyzing(True)
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._summary.setText(f"Loading vision model… {len(self._paths)} images")
 
         worker = ModelLoaderWorker(self._engine, str(model), str(mmproj), self._settings)
@@ -259,6 +261,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         if self._settings.last_source_folder:
             save_session(self._settings.last_source_folder, records)
         self._update_summary()
@@ -295,29 +298,34 @@ class MainWindow(QMainWindow):
         if self._generate_worker:
             self._generate_worker.cancel()
             self._summary.setText("Stopping mosaic generation…")
+        if self._export_worker:
+            self._export_worker.cancel()
+            self._summary.setText("Stopping mosaic export…")
 
     def _toggle_include(self, record: ImageRecord) -> None:
-        if self._generate_worker:
+        if self._generate_worker or self._export_worker:
             return
         record.manually_included = not record.manually_included
         if record.manually_included:
             record.manually_excluded = False
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._rerank_without_detection()
         self.details.show_record(record)
 
     def _toggle_exclude(self, record: ImageRecord) -> None:
-        if self._generate_worker:
+        if self._generate_worker or self._export_worker:
             return
         record.manually_excluded = not record.manually_excluded
         if record.manually_excluded:
             record.manually_included = False
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._rerank_without_detection()
         self.details.show_record(record)
 
     def _rerank_without_detection(self) -> None:
-        if not self._records or self._generate_worker:
+        if not self._records or self._generate_worker or self._export_worker:
             return
         self._records = rank_records(
             self._records,
@@ -331,7 +339,7 @@ class MainWindow(QMainWindow):
         self._update_summary()
 
     def _generate_project(self) -> None:
-        if self._generate_worker or self._loader or self._analysis_worker or self._post_worker:
+        if self._generate_worker or self._loader or self._analysis_worker or self._post_worker or self._export_worker:
             return
         if not self._layout_candidates():
             QMessageBox.warning(self, "Generate Mosaic", "No valid mosaic candidates are available. Run Analyze first.")
@@ -346,6 +354,7 @@ class MainWindow(QMainWindow):
         self._generate_worker = worker
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._summary.setText("Preparing mosaic recipe…")
         self._pool.start(worker)
 
@@ -362,7 +371,9 @@ class MainWindow(QMainWindow):
         self._records = records
         self.grid.load_records(records)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
-        self.settings_panel.set_preview_enabled(bool(self._selected_records()))
+        ready = bool(self._selected_records())
+        self.settings_panel.set_preview_enabled(ready)
+        self.settings_panel.set_export_mosaic_enabled(ready)
         self._update_summary()
         QMessageBox.information(
             self,
@@ -395,10 +406,75 @@ class MainWindow(QMainWindow):
         self._preview_window.raise_()
         self._preview_window.activateWindow()
 
+    def _export_mosaic(self) -> None:
+        """Render the generated mosaic to a final image file."""
+        if self._export_worker or self._generate_worker or self._loader or self._analysis_worker or self._post_worker:
+            return
+        selected = self._selected_records()
+        if not selected:
+            QMessageBox.warning(self, "Export Mosaic", "Generate a mosaic first.")
+            self.settings_panel.set_export_mosaic_enabled(False)
+            return
+
+        source = Path(self._settings.last_source_folder) if self._settings.last_source_folder else Path.home()
+        default_path = source / "mosaic.png"
+        output_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Mosaic Image",
+            str(default_path),
+            "PNG Image (*.png);;JPEG Image (*.jpg *.jpeg);;WebP Image (*.webp)",
+        )
+        if not output_path:
+            return
+
+        worker = MosaicExportWorker(
+            selected,
+            canvas_size=(self._settings.canvas_width, self._settings.canvas_height),
+            padding_px=self._settings.padding_px,
+            output_path=output_path,
+        )
+        worker.signals.progress.connect(self._summary.setText)
+        worker.signals.finished.connect(self._on_export_mosaic_finished)
+        worker.signals.cancelled.connect(self._on_export_mosaic_cancelled)
+        worker.signals.error.connect(self._on_export_mosaic_error)
+        self._export_worker = worker
+        self.settings_panel.set_generate_enabled(False)
+        self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
+        self._summary.setText("Rendering mosaic image…")
+        self._pool.start(worker)
+
+    def _on_export_mosaic_finished(self, path: str) -> None:
+        self._export_worker = None
+        ready = bool(self._selected_records())
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(ready)
+        self.settings_panel.set_export_mosaic_enabled(ready)
+        self._update_summary()
+        QMessageBox.information(self, "Mosaic exported", f"Image saved to:\n{path}")
+
+    def _on_export_mosaic_cancelled(self) -> None:
+        self._export_worker = None
+        ready = bool(self._selected_records())
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(ready)
+        self.settings_panel.set_export_mosaic_enabled(ready)
+        self._summary.setText("Mosaic export cancelled")
+
+    def _on_export_mosaic_error(self, message: str) -> None:
+        self._export_worker = None
+        ready = bool(self._selected_records())
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self.settings_panel.set_preview_enabled(ready)
+        self.settings_panel.set_export_mosaic_enabled(ready)
+        self._update_summary()
+        QMessageBox.critical(self, "Export Mosaic failed", message)
+
     def _on_generate_cancelled(self) -> None:
         self._generate_worker = None
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._update_summary()
         self._summary.setText("Mosaic generation cancelled")
 
@@ -406,6 +482,7 @@ class MainWindow(QMainWindow):
         self._generate_worker = None
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._update_summary()
         QMessageBox.critical(self, "Generate failed", message)
 
@@ -414,9 +491,11 @@ class MainWindow(QMainWindow):
         self._analysis_worker = None
         self._post_worker = None
         self._generate_worker = None
+        self._export_worker = None
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
         self._summary.setText("Error")
         QMessageBox.critical(self, "AI Mosaic Builder", message)
 

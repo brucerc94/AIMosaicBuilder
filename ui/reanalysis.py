@@ -1,8 +1,6 @@
 """Safe re-analysis controller for AI Mosaic Builder."""
 from __future__ import annotations
 
-from typing import Iterable
-
 from PySide6.QtWidgets import QMessageBox, QPushButton
 
 from engine.models import ImageRecord, ImageStatus
@@ -84,7 +82,6 @@ class ReanalysisController:
                 QMessageBox.ButtonRole.AcceptRole,
             )
         cancel_button = box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-        box.setDefaultButton(cancel_button)
         box.exec()
 
         clicked = box.clickedButton()
@@ -133,19 +130,16 @@ class ReanalysisController:
         original_records: list[ImageRecord],
         selected_only: bool,
     ) -> None:
-        if selected_only:
-            by_path = {record.path: record for record in fresh}
-            merged: list[ImageRecord] = []
-            for original in original_records:
-                replacement = by_path.get(original.path)
-                if replacement is None:
-                    merged.append(original)
-                    continue
-                replacement.manually_included = original.manually_included
-                replacement.manually_excluded = original.manually_excluded
-                merged.append(replacement)
-        else:
-            merged = fresh
+        by_path = {record.path: record for record in fresh}
+        merged: list[ImageRecord] = []
+        for original in original_records:
+            replacement = by_path.get(original.path)
+            if replacement is None:
+                merged.append(original)
+                continue
+            replacement.manually_included = original.manually_included
+            replacement.manually_excluded = original.manually_excluded
+            merged.append(replacement)
 
         self.button.setEnabled(True)
         window._on_analysis_finished(merged)

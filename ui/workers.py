@@ -228,13 +228,32 @@ class GenerateMosaicWorker(QRunnable):
 
             target = int(self._settings.target_images)
             canvas_size = (self._settings.canvas_width, self._settings.canvas_height)
+            min_subject_percent = max(
+                1.0,
+                min(50.0, float(getattr(self._settings, "min_subject_percent", 10.0))),
+            )
+            target_subject_percent = max(
+                min_subject_percent,
+                min(75.0, float(getattr(self._settings, "target_subject_percent", 15.0))),
+            )
+            min_subject_px = max(1, round(canvas_size[1] * min_subject_percent / 100.0))
+            target_subject_px = max(1, round(canvas_size[1] * target_subject_percent / 100.0))
+            logger.info(
+                "[generate] subject size settings: min=%.1f%% -> %dpx, target=%.1f%% -> %dpx, canvas_h=%d",
+                min_subject_percent,
+                min_subject_px,
+                target_subject_percent,
+                target_subject_px,
+                canvas_size[1],
+            )
+
             common_kwargs = {
                 "canvas_size": canvas_size,
                 "padding_px": self._settings.padding_px,
                 "requirements": requirements,
                 "phash_threshold": self._settings.phash_threshold,
-                "min_subject_px": 160,
-                "target_subject_px": 260,
+                "min_subject_px": min_subject_px,
+                "target_subject_px": target_subject_px,
                 "max_zoom": 3.0,
             }
 

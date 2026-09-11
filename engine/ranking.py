@@ -90,10 +90,20 @@ def _preference_bonus(record: ImageRecord, requirements: MosaicRequirements) -> 
     return min(10.0, bonus)
 
 
+def _user_request_score(record: ImageRecord) -> float:
+    try:
+        value = float(_tags(record).get("user_request_score", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, value))
+
+
 def compute_score(
     analysis: ImageAnalysis,
     weights: Optional[RankingWeights] = None,
     preference_bonus: float = 0.0,
+    user_request_score: float = 1.0,
+    user_request_weight: float = 0.0,
 ) -> RankingResult:
     if analysis.reject or not analysis.has_person:
         return RankingResult(
@@ -135,11 +145,22 @@ def compute_score(
 
     raw = min(1.0, sum(components.values()))
     penalty = min(0.9, penalty)
-    score = max(0.0, raw - penalty) * 100.0
+    base_score = max(0.0, raw - penalty) * 100.0
+
+    request_weight = max(0.0, min(1.0, float(user_request_weight)))
+    request_score = max(0.0, min(1.0, float(user_request_score)))
+    if request_weight > 0.0:
+        score = base_score * (1.0 - request_weight) + (request_score * 100.0) * request_weight
+    else:
+        score = base_score
     score = min(100.0, score + preference_bonus)
+
+    breakdown = {key: round(value * 100.0, 2) for key, value in components.items()}
+    if request_weight > 0.0:
+        breakdown["user_request_match"] = round(request_score * request_weight * 100.0, 2)
     return RankingResult(
         final_score=round(score, 2),
-        score_breakdown={key: round(value * 100.0, 2) for key, value in components.items()},
+        score_breakdown=breakdown,
         penalty_applied=round(penalty * 100.0, 2),
         penalty_reasons=reasons,
     )
@@ -188,13 +209,7 @@ def _refill_selection_after_exclusion(
     requirements: MosaicRequirements,
     phash_threshold: int = 10,
 ) -> None:
-    """Replace manually excluded selected images without changing the target size.
-
-    Existing selected records are preserved. A vacancy is first filled by a
-    candidate that repairs an unmet mosaic requirement, then by the highest
-    ranked eligible candidate. Diversity is preferred but never blocks a valid
-    replacement when no diverse candidate remains.
-    """
+    """Replace manually excluded selected images without changing the target size."""
     if target_count <= 0:
         return
 
@@ -276,6 +291,7 @@ def rank_records(
     records: list[ImageRecord],
     weights: Optional[RankingWeights] = None,
     requirements: Optional[MosaicRequirements] = None,
+    user_request_weight: float = 0.0,
 ) -> list[ImageRecord]:
     requirements = requirements or MosaicRequirements()
     selected_before = sum(1 for record in records if record.status == ImageStatus.SELECTED)
@@ -283,10 +299,13 @@ def rank_records(
 
     for record in records:
         if record.analysis and not record.manually_excluded:
+            request_score = _user_request_score(record)
             record.ranking = compute_score(
                 record.analysis,
                 weights,
                 _preference_bonus(record, requirements),
+                user_request_score=request_score,
+                user_request_weight=user_request_weight,
             )
             if not _hard_eligible(record, requirements) and not record.manually_included:
                 record.ranking.penalty_reasons.append("fails_mosaic_requirements")
@@ -374,8 +393,6 @@ def apply_diversity_filter(
         ("body_visible", requirements.min_body_visible),
     )
 
-    # Reserve slots for mandatory categories first. A selected image can satisfy
-    # several categories at once, so we always count it only once in the mosaic.
     for name, minimum in requirement_counts:
         if minimum <= 0:
             continue
@@ -397,7 +414,6 @@ def apply_diversity_filter(
         if len(selected) >= target:
             break
 
-    # Fill remaining positions by score while maintaining diversity.
     if len(selected) < target:
         for record in candidates:
             if len(selected) >= target:

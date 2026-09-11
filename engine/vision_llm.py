@@ -262,6 +262,7 @@ class VisionLLMEngine:
 
     def load_model(self, model_path: str, mmproj_path: str = "", n_ctx: int = 2048, n_gpu_layers: int = 0,
                    n_threads: int = 4, n_threads_batch: int = 0,
+                   n_batch: int = 512, n_ubatch: int = 512,
                    progress_callback: Optional[Callable[[str], None]] = None) -> None:
         if not _llama_available:
             raise RuntimeError("llama-cpp-python is not installed.")
@@ -277,7 +278,8 @@ class VisionLLMEngine:
                 logger.info("[vision] MODEL REUSE | model=%s | mmproj=%s | n_ctx=%d | instance_id=%s", Path(model_path).name, Path(mmproj_path).name, configured_ctx, hex(id(self._model)))
                 return
             load_started = time.perf_counter()
-            logger.info("[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d", Path(model_path).name, Path(mmproj_path).name, configured_ctx, n_gpu_layers, n_threads)
+            logger.info("[vision] MODEL LOAD START | model=%s | mmproj=%s | n_ctx=%d | n_gpu_layers=%d | n_threads=%d | n_batch=%d | n_ubatch=%d",
+                        Path(model_path).name, Path(mmproj_path).name, configured_ctx, n_gpu_layers, n_threads, n_batch, n_ubatch)
             self._unload()
             self._capabilities = llama_features.detect_vision_capabilities(model_path)
             self.log_capabilities()
@@ -287,18 +289,47 @@ class VisionLLMEngine:
             if model_family == "gemma4" and handler_name != "Gemma4ChatHandler":
                 raise RuntimeError("Gemma-4 was detected but Gemma4ChatHandler is unavailable in the installed llama-cpp-python.")
             extra: dict = {}
-            if caps["flash_attn_param"]:
-                extra["flash_attn"] = True
-            if n_threads_batch > 0 and caps["n_threads_batch_param"]:
-                extra["n_threads_batch"] = n_threads_batch
+
+            # --- CUDA / GPU optimizations (set env vars BEFORE constructing Llama) ---
+            mmq_forced = False
             if n_gpu_layers != 0:
                 gpu = _detect_gpu_info()
                 if gpu:
                     logger.info("[vision] GPU=%s | VRAM=%s/%s MiB | CC=%s", gpu["name"], gpu["mem_free"], gpu["mem_total"], gpu["compute_cap"])
                     if _needs_mmq_fallback(gpu["name"]):
                         os.environ["GGML_CUDA_FORCE_MMQ"] = "1"
-                        if caps["flash_attn_param"]:
-                            extra["flash_attn"] = False
+                        mmq_forced = True
+                        logger.info("[vision] GGML_CUDA_FORCE_MMQ=1 set (Turing/Pascal GPU: no tensor cores)")
+                    elif os.environ.get("GGML_CUDA_FORCE_MMQ") == "1":
+                        mmq_forced = True
+                        logger.info("[vision] GGML_CUDA_FORCE_MMQ=1 already in environment")
+
+            # flash_attn: enable on CUDA, disable when MMQ fallback is active
+            if caps["flash_attn_param"]:
+                if mmq_forced:
+                    extra["flash_attn"] = False
+                    logger.info("[vision] flash_attn=False (MMQ fallback active)")
+                else:
+                    extra["flash_attn"] = True
+                    logger.info("[vision] flash_attn=True")
+
+            # n_threads_batch: default to n_threads when not explicitly set
+            effective_n_threads_batch = n_threads_batch if n_threads_batch > 0 else n_threads
+            if caps["n_threads_batch_param"]:
+                extra["n_threads_batch"] = effective_n_threads_batch
+                logger.info("[vision] n_threads_batch=%d", effective_n_threads_batch)
+
+            # n_batch / n_ubatch: CRITICAL — controls how many tokens are evaluated per GPU call.
+            # Default (512) is fine for text, but multimodal image-token batches can stall if
+            # llama.cpp falls back to a smaller value. Explicitly set to match AIStoryWriter.
+            if caps["n_batch_param"]:
+                extra["n_batch"] = n_batch
+                logger.info("[vision] n_batch=%d", n_batch)
+            if caps["n_ubatch_param"]:
+                extra["n_ubatch"] = n_ubatch
+                logger.info("[vision] n_ubatch=%d", n_ubatch)
+
+            # Vision mechanism
             mechanism = caps["vision_mechanism"]
             if mechanism == "chat_handler":
                 extra["chat_handler"] = _build_chat_handler(handler_name, mmproj_path)
@@ -308,9 +339,31 @@ class VisionLLMEngine:
                 extra["clip_model_path"] = mmproj_path
             else:
                 raise RuntimeError(f"No usable multimodal vision mechanism for model family {model_family!r}.")
+
             if progress_callback:
                 progress_callback(f"Loading {Path(model_path).name}…")
-            kwargs = {"model_path": model_path, "n_ctx": configured_ctx, "n_gpu_layers": n_gpu_layers, "n_threads": n_threads, "verbose": False, **extra}
+
+            kwargs = {
+                "model_path": model_path,
+                "n_ctx": configured_ctx,
+                "n_gpu_layers": n_gpu_layers,
+                "n_threads": n_threads,
+                "verbose": False,
+                **extra,
+            }
+            # Log every effective kwarg so we can verify parity with AIStoryWriter
+            logger.info(
+                "[vision] EFFECTIVE LLAMA KWARGS: n_ctx=%d n_gpu_layers=%d n_threads=%d "
+                "n_threads_batch=%s n_batch=%s n_ubatch=%s flash_attn=%s "
+                "GGML_CUDA_FORCE_MMQ=%s mechanism=%s handler=%s",
+                configured_ctx, n_gpu_layers, n_threads,
+                extra.get("n_threads_batch", "not_set"),
+                extra.get("n_batch", "not_set"),
+                extra.get("n_ubatch", "not_set"),
+                extra.get("flash_attn", "not_set"),
+                os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
+                mechanism, handler_name,
+            )
             try:
                 self._model = Llama(**kwargs)
             except TypeError as exc:
@@ -320,7 +373,18 @@ class VisionLLMEngine:
             self._model_name = Path(model_path).name
             self._model_ctx = configured_ctx
             self._vision_ready = True
-            logger.info("[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | instance_id=%s", self._model_name, time.perf_counter() - load_started, configured_ctx, hex(id(self._model)))
+            elapsed = time.perf_counter() - load_started
+            logger.info(
+                "[vision] MODEL LOAD COMPLETE | model=%s | elapsed=%.2fs | n_ctx=%d | n_gpu_layers=%d | "
+                "n_batch=%s | n_ubatch=%s | n_threads=%d | n_threads_batch=%s | flash_attn=%s | "
+                "GGML_CUDA_FORCE_MMQ=%s | instance_id=%s",
+                self._model_name, elapsed, configured_ctx, n_gpu_layers,
+                extra.get("n_batch", "default"), extra.get("n_ubatch", "default"),
+                n_threads, extra.get("n_threads_batch", "default"),
+                extra.get("flash_attn", "default"),
+                os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
+                hex(id(self._model)),
+            )
             if progress_callback:
                 progress_callback("Vision model ready.")
 
@@ -348,13 +412,35 @@ class VisionLLMEngine:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
         image_name = Path(image_path).name
         total_started = time.perf_counter()
+
+        # --- Phase 1: preprocess (resize + base64 encode) ---
         preprocess_started = time.perf_counter()
         img_b64 = _encode_image_b64(image_path)
-        kwargs = {"messages": _build_messages(img_b64), "max_tokens": max_tokens, "temperature": temperature, "top_p": 0.9, "top_k": 40, "stream": False}
+        preprocess_elapsed = time.perf_counter() - preprocess_started
+        logger.info("[vision] PREPROCESS | image=%s | encode=%.3fs | b64_bytes=%d",
+                    image_name, preprocess_elapsed, len(img_b64))
+
+        kwargs = {
+            "messages": _build_messages(img_b64),
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "top_p": 0.9,
+            "top_k": 40,
+            "stream": False,
+        }
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
-        preprocess_elapsed = time.perf_counter() - preprocess_started
-        logger.info("[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | temperature=%.2f | instance_id=%s", image_name, self._model_name, self._model_ctx, max_tokens, temperature, hex(id(self._model)))
+
+        logger.info(
+            "[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | "
+            "temperature=%.2f | top_p=%.2f | top_k=%d | response_format=%s | instance_id=%s",
+            image_name, self._model_name, self._model_ctx, max_tokens, temperature,
+            kwargs["top_p"], kwargs["top_k"],
+            kwargs.get("response_format", {}).get("type", "none"),
+            hex(id(self._model)),
+        )
+
+        # --- Phase 2: model call (visual encode + prompt eval + generation) ---
         inference_started = time.perf_counter()
         with self._lock:
             try:
@@ -362,15 +448,35 @@ class VisionLLMEngine:
                 text = response["choices"][0]["message"]["content"] or ""
             except Exception as exc:
                 inference_elapsed = time.perf_counter() - inference_started
-                logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s", image_name, inference_elapsed, time.perf_counter() - total_started, exc)
+                logger.error("[vision] INFERENCE ERROR | image=%s | inference=%.2fs | total=%.2fs | error=%s",
+                             image_name, inference_elapsed, time.perf_counter() - total_started, exc)
                 raise RuntimeError(f"Vision inference failed: {exc}") from exc
         inference_elapsed = time.perf_counter() - inference_started
+
+        # --- Phase 3: parse JSON ---
         parse_started = time.perf_counter()
         analysis = _parse_analysis(text, self._model_name)
         parse_elapsed = time.perf_counter() - parse_started
+
         total_elapsed = time.perf_counter() - total_started
         usage = response.get("usage") or {}
-        logger.info("[vision] INFERENCE DONE | image=%s | preprocess=%.2fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | prompt_tokens=%s | completion_tokens=%s | response_chars=%d", image_name, preprocess_elapsed, inference_elapsed, parse_elapsed, total_elapsed, usage.get("prompt_tokens", "?"), usage.get("completion_tokens", "?"), len(text))
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        # Compute effective tokens/s for the generation phase.
+        # Approximate: assume visual encode ~1.8s, rest is prompt_eval + generation.
+        # We report tok/s over the full model_call for comparison with AIStoryWriter logs.
+        total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
+        gen_tps = (completion_tokens / inference_elapsed) if (completion_tokens and inference_elapsed > 0) else 0.0
+        total_tps = (total_tokens / inference_elapsed) if (total_tokens and inference_elapsed > 0) else 0.0
+
+        logger.info(
+            "[vision] INFERENCE DONE | image=%s | preprocess=%.3fs | model_call=%.2fs | parse=%.3fs | total=%.2fs | "
+            "prompt_tokens=%s | completion_tokens=%s | gen_toks/s=%.1f | total_toks/s=%.1f | response_chars=%d",
+            image_name, preprocess_elapsed, inference_elapsed, parse_elapsed, total_elapsed,
+            prompt_tokens or "?", completion_tokens or "?",
+            gen_tps, total_tps, len(text),
+        )
         return analysis
 
     def analyze_image_raw(self, image_path: str, max_tokens: int = 192, temperature: float = 0.0):

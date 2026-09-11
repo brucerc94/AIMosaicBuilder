@@ -405,6 +405,8 @@ class AppSettings:
     n_gpu_layers: int = 0
     n_threads: int = 4
     n_threads_batch: int = 0
+    n_batch: int = 512
+    n_ubatch: int = 512
     target_images: int = 0
     canvas_width: int = 3840
     canvas_height: int = 2160
@@ -430,6 +432,8 @@ class AppSettings:
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,
             "n_threads_batch": self.n_threads_batch,
+            "n_batch": self.n_batch,
+            "n_ubatch": self.n_ubatch,
             "target_images": self.target_images,
             "canvas_width": self.canvas_width,
             "canvas_height": self.canvas_height,
@@ -458,6 +462,8 @@ class AppSettings:
             n_gpu_layers=int(d.get("n_gpu_layers", 0)),
             n_threads=int(d.get("n_threads", 4)),
             n_threads_batch=int(d.get("n_threads_batch", 0)),
+            n_batch=int(d.get("n_batch", 512)),
+            n_ubatch=int(d.get("n_ubatch", 512)),
             target_images=int(d.get("target_images", 0)),
             canvas_width=int(d.get("canvas_width", 3840)),
             canvas_height=int(d.get("canvas_height", 2160)),

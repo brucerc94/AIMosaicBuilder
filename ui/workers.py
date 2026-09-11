@@ -43,6 +43,8 @@ class ModelLoaderWorker(QRunnable):
                 n_gpu_layers=self._settings.n_gpu_layers,
                 n_threads=self._settings.n_threads,
                 n_threads_batch=self._settings.n_threads_batch,
+                n_batch=self._settings.n_batch,
+                n_ubatch=self._settings.n_ubatch,
                 progress_callback=self.signals.progress.emit,
             )
             self.signals.finished.emit()

@@ -8,8 +8,8 @@ from pathlib import Path
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
-from engine.cache import cache_model_key, get_cache, source_cache_dir
-from engine.image_analyzer import build_record, discover_images
+from engine.cache import get_cache, source_cache_dir
+from engine.image_analyzer import build_record, cache_model_key, discover_images
 from engine.models import ImageRecord, ImageStatus
 from engine.ranking import rank_records
 from engine.runtime_config import configure_vision_engine

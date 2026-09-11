@@ -17,7 +17,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-for /f "tokens=2" %%V in ('py -3.12 -c "import sys; print(sys.version.split()[0])" 2^>nul') do set PYVER=%%V
 py -3.12 -c "import sys; print('Using Python', sys.version)" >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Python 3.12 was not found.
@@ -37,16 +36,11 @@ if not exist ".venv\Scripts\python.exe" (
 )
 
 set "PY=.venv\Scripts\python.exe"
-set "PIP=.venv\Scripts\pip.exe"
 
-echo [2/6] Upgrading pip, setuptools and wheel...
-"%PY%" -m pip install --upgrade pip setuptools wheel
-if errorlevel 1 goto :fail
+if exist "%TEMP%\aimosaic_requirements.txt" del /q "%TEMP%\aimosaic_requirements.txt" >nul 2>&1
+findstr /V /I /C:"llama-cpp-python" requirements.txt > "%TEMP%\aimosaic_requirements.txt"
 
-echo [3/6] Installing core Python dependencies...
-"%PY%" -m pip install -r requirements.txt
-if errorlevel 1 goto :fail
-
+:choose_runtime
 echo.
 echo ================================================================
 echo Select llama.cpp runtime:
@@ -76,9 +70,18 @@ if "%CUDA_CHOICE%"=="6" set "LLAMA_INDEX=https://abetlen.github.io/llama-cpp-pyt
 
 if not "%CUDA_CHOICE%"=="1" if not "%CUDA_CHOICE%"=="2" if not "%CUDA_CHOICE%"=="3" if not "%CUDA_CHOICE%"=="4" if not "%CUDA_CHOICE%"=="5" if not "%CUDA_CHOICE%"=="6" (
     echo [ERROR] Invalid choice.
-    pause
-    exit /b 1
+    set "CUDA_CHOICE="
+    goto :choose_runtime
 )
+
+echo.
+echo [2/6] Upgrading pip, setuptools and wheel...
+"%PY%" -m pip install --upgrade pip setuptools wheel
+if errorlevel 1 goto :fail
+
+echo [3/6] Installing common Python dependencies...
+"%PY%" -m pip install -r "%TEMP%\aimosaic_requirements.txt"
+if errorlevel 1 goto :fail
 
 echo [4/6] Installing llama-cpp-python from:
 echo        %LLAMA_INDEX%
@@ -96,13 +99,13 @@ echo [5/6] Verifying installed packages...
 "%PY%" -c "import PySide6, PIL, numpy, cv2, imagehash, ultralytics, llama_cpp; print('All Python packages imported successfully.')"
 if errorlevel 1 goto :fail
 
-if "%CUDA_CHOICE%"=="1" goto :verify
-"%PY%" -c "from llama_cpp import llama_supports_gpu_offload; print('llama.cpp GPU offload:', llama_supports_gpu_offload())" 2>nul
+if not "%CUDA_CHOICE%"=="1" "%PY%" -c "from llama_cpp import llama_supports_gpu_offload; print('llama.cpp GPU offload:', llama_supports_gpu_offload())" 2>nul
 
-:verify
 echo [6/6] Checking application startup imports...
 "%PY%" -c "import main; print('Application imports successfully.')"
 if errorlevel 1 goto :fail
+
+if exist "%TEMP%\aimosaic_requirements.txt" del /q "%TEMP%\aimosaic_requirements.txt" >nul 2>&1
 
 echo.
 echo ================================================================
@@ -122,6 +125,7 @@ pause
 exit /b 0
 
 :fail
+if exist "%TEMP%\aimosaic_requirements.txt" del /q "%TEMP%\aimosaic_requirements.txt" >nul 2>&1
 echo.
 echo ================================================================
 echo Installation FAILED.

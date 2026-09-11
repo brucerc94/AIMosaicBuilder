@@ -1,9 +1,8 @@
 """
 Session persistence for AI Mosaic Builder.
 
-Saves and restores the full list of ImageRecords next to the source folder's
-analysis cache so a project is self-contained and can be moved/copied with
-its state.
+Saves and restores the full list of ImageRecords and source-folder exclusions
+next to the analysis cache so a project is self-contained.
 
 Session file:
     <source>/.aimosaic/session.json
@@ -29,13 +28,46 @@ def _session_path(source_folder: str) -> Path:
     return source / _SESSION_DIRNAME / _SESSION_FILENAME
 
 
-def save_session(source_folder: str, records: list[ImageRecord]) -> None:
-    """Persist the current list of ImageRecords inside the source folder."""
+def _normalize_excluded_folder(value: str) -> str:
+    text = str(value or "").strip().replace("\\", "/")
+    while text.startswith("./"):
+        text = text[2:]
+    text = text.strip("/")
+    if not text or text == "." or text == ".." or text.startswith("../"):
+        return ""
+    return text
+
+
+def _read_existing_exclusions(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    try:
+        parsed = json.loads(path.read_text(encoding="utf-8"))
+        values = parsed.get("excluded_folders", []) if isinstance(parsed, dict) else []
+        if not isinstance(values, list):
+            return []
+        return sorted({item for item in (_normalize_excluded_folder(v) for v in values) if item})
+    except Exception:
+        return []
+
+
+def save_session(
+    source_folder: str,
+    records: list[ImageRecord],
+    excluded_folders: list[str] | None = None,
+) -> None:
+    """Persist records and source-folder exclusions inside the source folder."""
     path = _session_path(source_folder)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
+        exclusions = (
+            sorted({item for item in (_normalize_excluded_folder(v) for v in excluded_folders or []) if item})
+            if excluded_folders is not None
+            else _read_existing_exclusions(path)
+        )
         data = {
             "source_folder": str(Path(source_folder).expanduser().resolve()),
+            "excluded_folders": exclusions,
             "records": [r.to_dict() for r in records],
         }
         tmp = path.with_suffix(".tmp")
@@ -44,7 +76,12 @@ def save_session(source_folder: str, records: list[ImageRecord]) -> None:
             encoding="utf-8",
         )
         tmp.replace(path)
-        logger.info("[session] Saved %d records to %s", len(records), path)
+        logger.info(
+            "[session] Saved %d records and %d excluded folder(s) to %s",
+            len(records),
+            len(exclusions),
+            path,
+        )
     except Exception as e:
         logger.error("[session] Failed to save session: %s", e)
 
@@ -67,6 +104,14 @@ def load_session(source_folder: str) -> Optional[list[ImageRecord]]:
     except Exception as e:
         logger.warning("[session] Cannot load %s: %s", path, e)
         return None
+
+
+def load_excluded_folders(source_folder: str) -> list[str]:
+    """Load normalized relative subfolders excluded for this source folder."""
+    path = _session_path(source_folder)
+    exclusions = _read_existing_exclusions(path)
+    logger.info("[session] Loaded %d excluded folder(s) from %s", len(exclusions), path)
+    return exclusions
 
 
 def delete_session(source_folder: str) -> None:

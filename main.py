@@ -6,6 +6,12 @@ import sys
 
 from PySide6.QtWidgets import QApplication
 
+from engine.target_subject import install_target_subject_bias
+
+# Install before ui.main imports its workers so every layout optimization call
+# uses the requested Target Subject value when comparing layouts.
+install_target_subject_bias()
+
 from ui.main import MainWindow
 from ui.styles import DARK_STYLESHEET
 

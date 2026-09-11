@@ -1,12 +1,15 @@
 # AI Mosaic Builder
 # Python 3.10+ recommended
 #
-# This file contains the platform-independent Python dependencies.
-# Install llama-cpp-python separately with the Windows installer so the
-# correct CPU/CUDA build can be selected for the machine.
+# The Windows installer filters llama-cpp-python from this file and installs
+# the CPU/CUDA build separately so the correct hardware runtime is selected.
 
 # ── Desktop UI ────────────────────────────────────────────────────────────────
 PySide6>=6.5.0
+
+# ── Local LLM / multimodal vision ────────────────────────────────────────────
+# Gemma-4 requires a llama-cpp-python release that provides Gemma4ChatHandler.
+llama-cpp-python>=0.3.33,<0.4
 
 # ── Image processing ─────────────────────────────────────────────────────────
 Pillow>=10.0.0

@@ -8,7 +8,7 @@ from pathlib import Path
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
-from engine.cache import get_cache, source_cache_dir
+from engine.cache import cache_model_key, get_cache, source_cache_dir
 from engine.image_analyzer import build_record, discover_images
 from engine.models import ImageRecord, ImageStatus
 from engine.ranking import rank_records
@@ -142,7 +142,9 @@ class MainWindow(QMainWindow):
             self._summary.setText(f"No supported images found in {source}")
             return
 
-        model_hint = Path(self._settings.model_path).name if self._settings.model_path else ""
+        model_name = Path(self._settings.model_path).name if self._settings.model_path else ""
+        custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "")
+        cache_model = cache_model_key(model_name, custom_prompt) if model_name else ""
         records: list[ImageRecord] = []
         cache_hits = 0
         for path in self._paths:
@@ -157,7 +159,7 @@ class MainWindow(QMainWindow):
                 file_size=file_size,
                 status=ImageStatus.PENDING,
             )
-            cached = self._cache.get_by_path(str(p), model=model_hint)
+            cached = self._cache.get_by_path(str(p), model=cache_model)
             if cached is not None:
                 record.analysis = cached
                 record.status = ImageStatus.CACHED
@@ -171,15 +173,14 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
         self.settings_panel.set_export_mosaic_enabled(False)
+        prompt_state = "custom request" if custom_prompt.strip() else "standard analysis"
         self._summary.setText(
-            f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | Ready to Analyze"
+            f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | {prompt_state} | Ready to Analyze"
         )
         logger.info(
-            "[source] Open Folder | folder=%s | images=%d | cache_hits=%d | model_loaded=%s",
-            source,
-            len(records),
-            cache_hits,
-            self._engine.model_loaded,
+            "[source] Open Folder | folder=%s | images=%d | cache_hits=%d | model_loaded=%s | custom_request=%s",
+            source, len(records), cache_hits, self._engine.model_loaded,
+            "yes" if custom_prompt.strip() else "no",
         )
 
     def _start_analysis(self) -> None:
@@ -327,10 +328,16 @@ class MainWindow(QMainWindow):
     def _rerank_without_detection(self) -> None:
         if not self._records or self._generate_worker or self._export_worker:
             return
+        custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()
+        custom_weight = max(
+            0.0,
+            min(1.0, float(getattr(self._settings, "custom_prompt_weight", 30.0)) / 100.0),
+        ) if custom_prompt else 0.0
         self._records = rank_records(
             self._records,
             self._settings.ranking_weights,
             self._settings.mosaic_requirements,
+            user_request_weight=custom_weight,
         )
         self.grid.load_records(self._records)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))

@@ -135,6 +135,15 @@ def supports(param_name: str) -> bool:
 
 
 def supports_chat_completion_param(param_name: str) -> bool:
+    """Return whether a chat-completion parameter is available.
+
+    For AIMosaicBuilder's Gemma-4 vision path, JSON grammar/structured-output
+    enforcement is intentionally disabled. llama.cpp's native JSON constraint
+    adds substantial overhead in this multimodal workload; the application
+    already validates the returned JSON structurally after inference.
+    """
+    if param_name == "response_format":
+        return False
     try:
         from llama_cpp import Llama
         params = inspect.signature(Llama.create_chat_completion).parameters.values()

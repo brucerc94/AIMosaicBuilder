@@ -122,7 +122,6 @@ class PostProcessWorker(QRunnable):
                 detector_error = str(exc)
                 logger.error("[post] person detector initialization failed: %s", exc, exc_info=True)
 
-            # Analysis/detection must not depend on canvas size, target count or zoom.
             for index, record in enumerate(self._records, start=1):
                 if self._cancelled:
                     break
@@ -141,10 +140,16 @@ class PostProcessWorker(QRunnable):
                             record.error_message = "No real person bounding box detected."
                 self.signals.progress.emit(index, total, record.filename)
 
+            custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()
+            custom_weight = max(
+                0.0,
+                min(1.0, float(getattr(self._settings, "custom_prompt_weight", 30.0)) / 100.0),
+            ) if custom_prompt else 0.0
             ranked = rank_records(
                 self._records,
                 self._settings.ranking_weights,
                 self._settings.mosaic_requirements,
+                user_request_weight=custom_weight,
             )
 
             for record in ranked:
@@ -163,9 +168,8 @@ class PostProcessWorker(QRunnable):
                 and not record.manually_excluded
             )
             logger.info(
-                "[post] analysis/ranking complete: records=%d candidates=%d; layout deferred to Generate Mosaic",
-                len(ranked),
-                candidate_count,
+                "[post] analysis/ranking complete: records=%d candidates=%d custom_request=%s weight=%.0f%%; layout deferred to Generate Mosaic",
+                len(ranked), candidate_count, "yes" if custom_prompt else "no", custom_weight * 100.0,
             )
             self.signals.finished.emit(ranked)
         except Exception as exc:
@@ -194,12 +198,7 @@ class GenerateMosaicWorker(QRunnable):
         self._cancelled = True
 
     def _reset_previous_layout_state(self) -> None:
-        """Discard only generated layout state before recomputing from current user choices.
-
-        Manual include/exclude flags are intentionally preserved. The previous
-        SELECTED/selection values belong to the old layout and must never bias a
-        subsequent Generate Mosaic run.
-        """
+        """Discard only generated layout state before recomputing from current user choices."""
         cleared = 0
         for record in self._records:
             if record.status == ImageStatus.SELECTED or record.selection is not None:
@@ -218,13 +217,17 @@ class GenerateMosaicWorker(QRunnable):
             requirements = self._settings.mosaic_requirements
             self.signals.progress.emit("Preparing mosaic recipe…")
 
-            # Generate Mosaic is a fresh layout pass. A previous generated layout
-            # must never constrain the new selection after manual include/exclude edits.
             self._reset_previous_layout_state()
+            custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()
+            custom_weight = max(
+                0.0,
+                min(1.0, float(getattr(self._settings, "custom_prompt_weight", 30.0)) / 100.0),
+            ) if custom_prompt else 0.0
             ranked = rank_records(
                 self._records,
                 self._settings.ranking_weights,
                 requirements,
+                user_request_weight=custom_weight,
             )
 
             candidates = [
@@ -246,10 +249,7 @@ class GenerateMosaicWorker(QRunnable):
 
             target = int(self._settings.target_images)
             canvas_size = (self._settings.canvas_width, self._settings.canvas_height)
-            min_subject_percent = max(
-                1.0,
-                min(50.0, float(getattr(self._settings, "min_subject_percent", 10.0))),
-            )
+            min_subject_percent = max(1.0, min(50.0, float(getattr(self._settings, "min_subject_percent", 10.0))))
             target_subject_percent = max(
                 min_subject_percent,
                 min(75.0, float(getattr(self._settings, "target_subject_percent", 15.0))),
@@ -258,11 +258,7 @@ class GenerateMosaicWorker(QRunnable):
             target_subject_px = max(1, round(canvas_size[1] * target_subject_percent / 100.0))
             logger.info(
                 "[generate] subject size settings: min=%.1f%% -> %dpx, target=%.1f%% -> %dpx, canvas_h=%d",
-                min_subject_percent,
-                min_subject_px,
-                target_subject_percent,
-                target_subject_px,
-                canvas_size[1],
+                min_subject_percent, min_subject_px, target_subject_percent, target_subject_px, canvas_size[1],
             )
 
             common_kwargs = {
@@ -277,21 +273,11 @@ class GenerateMosaicWorker(QRunnable):
 
             if target == 0:
                 self.signals.progress.emit("Optimizing automatic layout…")
-                layout = optimize_auto_layout(
-                    candidates,
-                    max_images=100,
-                    min_zoom=0.1,
-                    zoom_decay=0.9,
-                    **common_kwargs,
-                )
+                layout = optimize_auto_layout(candidates, max_images=100, min_zoom=0.1, zoom_decay=0.9, **common_kwargs)
                 mode = "AUTO"
             else:
                 self.signals.progress.emit(f"Optimizing layout for {target} images…")
-                layout = optimize_fixed_layout(
-                    candidates,
-                    target=target,
-                    **common_kwargs,
-                )
+                layout = optimize_fixed_layout(candidates, target=target, **common_kwargs)
                 mode = f"FIXED={target}"
 
             if self._cancelled:
@@ -314,21 +300,12 @@ class GenerateMosaicWorker(QRunnable):
             save_session(source_folder, ranked)
 
             logger.info(
-                "[generate] complete mode=%s selected=%d canvas=%dx%d fill=%.1f%% avg_zoom=%.3f",
-                mode,
-                len(layout.placements),
-                canvas_size[0],
-                canvas_size[1],
-                layout.canvas_fill_ratio * 100.0,
-                layout.average_zoom,
+                "[generate] complete mode=%s selected=%d canvas=%dx%d fill=%.1f%% avg_zoom=%.3f custom_request=%s",
+                mode, len(layout.placements), canvas_size[0], canvas_size[1],
+                layout.canvas_fill_ratio * 100.0, layout.average_zoom, "yes" if custom_prompt else "no",
             )
             self.signals.finished.emit(
-                ranked,
-                path,
-                mode,
-                len(layout.placements),
-                float(layout.canvas_fill_ratio),
-                float(layout.average_zoom),
+                ranked, path, mode, len(layout.placements), float(layout.canvas_fill_ratio), float(layout.average_zoom)
             )
         except Exception as exc:
             logger.error("Mosaic generation failed: %s", exc, exc_info=True)

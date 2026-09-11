@@ -130,7 +130,12 @@ def configure_vision_engine(engine: Any, settings: Any) -> None:
     original_analyze_image = engine.analyze_image
 
     @wraps(original_analyze_image)
-    def analyze_image(image_path: str, max_tokens: int | None = None, temperature: float = 0.0):
+    def analyze_image(
+        image_path: str,
+        max_tokens: int | None = None,
+        temperature: float = 0.0,
+        custom_prompt: str = "",
+    ):
         effective = (
             engine._aimosaic_max_tokens
             if max_tokens is None
@@ -140,6 +145,7 @@ def configure_vision_engine(engine: Any, settings: Any) -> None:
             image_path,
             max_tokens=effective,
             temperature=temperature,
+            custom_prompt=custom_prompt,
         )
 
     engine.analyze_image = analyze_image

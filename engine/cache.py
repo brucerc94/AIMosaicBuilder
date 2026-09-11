@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -90,6 +91,30 @@ class AnalysisCache:
         except Exception as exc:
             logger.warning(f"[cache] Corrupt entry {file_hash[:12]}: {exc}")
             return None
+
+    def get_by_path(self, path: str, model: str = "") -> Optional[ImageAnalysis]:
+        """Hydrate an analysis from a source-folder cache without hashing the file."""
+        requested = Path(path).expanduser().resolve()
+        for entry in self._data.values():
+            if entry.get("analysis_version") != _CACHE_VERSION:
+                continue
+            if model and entry.get("model", "") != model:
+                continue
+            cached_path = entry.get("path", "")
+            if not cached_path:
+                continue
+            try:
+                if Path(cached_path).expanduser().resolve() != requested:
+                    continue
+                analysis = ImageAnalysis.from_dict(entry["analysis_result"])
+                if analysis.analysis_version != _CACHE_VERSION:
+                    continue
+                logger.debug("[cache] PATH HIT path=%s", path)
+                return analysis
+            except Exception:
+                continue
+        logger.debug("[cache] PATH MISS path=%s", path)
+        return None
 
     def put(self, file_hash: str, path: str, analysis: ImageAnalysis, model: str = "") -> None:
         self._data[file_hash] = {

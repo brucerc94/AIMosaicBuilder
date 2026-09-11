@@ -60,6 +60,11 @@ class SettingsPanel(BaseSettingsPanel):
     def set_preview_enabled(self, enabled: bool) -> None:
         self._btn_preview.setEnabled(bool(enabled))
 
+    def _on_changed(self, *args) -> None:
+        if not self._building:
+            self.set_preview_enabled(False)
+        super()._on_changed(*args)
+
     def current_settings(self) -> AppSettings:
         settings = super().current_settings()
         settings.max_tokens = self._max_tokens_spin.value()
@@ -67,4 +72,5 @@ class SettingsPanel(BaseSettingsPanel):
 
     def _on_max_tokens_changed(self, *_args) -> None:
         if not self._building:
+            self.set_preview_enabled(False)
             self.settings_changed.emit(self.current_settings())

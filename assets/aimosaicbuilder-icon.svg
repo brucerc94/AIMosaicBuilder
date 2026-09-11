@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="title desc">
+  <title id="title">AI Mosaic Builder</title>
+  <desc id="desc">A portrait silhouette surrounded by mosaic tiles.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7c5cff"/>
+      <stop offset="1" stop-color="#31c7ff"/>
+    </linearGradient>
+    <linearGradient id="face" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#d9defb"/>
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="8" flood-opacity="0.22"/>
+    </filter>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="52" fill="#101426"/>
+  <rect x="18" y="18" width="220" height="220" rx="44" fill="url(#bg)"/>
+  <g opacity="0.88">
+    <rect x="30" y="30" width="26" height="26" rx="5" fill="#ffffff" opacity="0.95"/>
+    <rect x="62" y="30" width="26" height="26" rx="5" fill="#101426" opacity="0.82"/>
+    <rect x="170" y="30" width="26" height="26" rx="5" fill="#101426" opacity="0.82"/>
+    <rect x="202" y="30" width="26" height="26" rx="5" fill="#ffffff" opacity="0.95"/>
+    <rect x="30" y="62" width="26" height="26" rx="5" fill="#101426" opacity="0.82"/>
+    <rect x="202" y="62" width="26" height="26" rx="5" fill="#101426" opacity="0.82"/>
+    <rect x="30" y="170" width="26" height="26" rx="5" fill="#ffffff" opacity="0.95"/>
+    <rect x="62" y="202" width="26" height="26" rx="5" fill="#101426" opacity="0.82"/>
+    <rect x="170" y="202" width="26" height="26" rx="5" fill="#ffffff" opacity="0.95"/>
+    <rect x="202" y="170" width="26" height="26" rx="5" fill="#101426" opacity="0.82"/>
+  </g>
+  <g filter="url(#shadow)">
+    <circle cx="128" cy="100" r="39" fill="url(#face)"/>
+    <path d="M63 204c7-42 31-63 65-63s58 21 65 63" fill="url(#face)"/>
+    <path d="M91 100c7-14 18-21 37-21s30 7 37 21c-6-3-12-5-18-6-9-2-19-2-29 0-10 1-19 3-27 6Z" fill="#101426" opacity="0.88"/>
+    <circle cx="113" cy="106" r="3.5" fill="#101426"/>
+    <circle cx="143" cy="106" r="3.5" fill="#101426"/>
+    <path d="M116 124c7 5 17 5 24 0" fill="none" stroke="#101426" stroke-width="4" stroke-linecap="round"/>
+  </g>
+  <g fill="#ffffff">
+    <rect x="74" y="42" width="10" height="10" rx="2" opacity="0.9"/>
+    <rect x="172" y="52" width="8" height="8" rx="2" opacity="0.85"/>
+    <rect x="44" y="124" width="8" height="8" rx="2" opacity="0.9"/>
+    <rect x="204" y="126" width="8" height="8" rx="2" opacity="0.9"/>
+    <rect x="78" y="210" width="8" height="8" rx="2" opacity="0.9"/>
+    <rect x="172" y="194" width="8" height="8" rx="2" opacity="0.9"/>
+  </g>
+</svg>

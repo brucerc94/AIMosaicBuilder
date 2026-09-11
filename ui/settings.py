@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSpinBox,
     QTabWidget,
+    QTextEdit,
     QVBoxLayout,
     QWidget,
 )
@@ -193,6 +194,32 @@ class SettingsPanel(QWidget):
 
     def _build_filters_tab(self) -> QWidget:
         content, layout = self._tab_container()
+
+        request = QGroupBox("AI Custom Request")
+        request_layout = QVBoxLayout(request)
+        request_hint = QLabel(
+            "Optional. This is evaluated by Gemma during Analyze together with the normal photo analysis. "
+            "Examples: ‘solo caminando’, ‘todos saltando’, or ‘fotos en la playa’."
+        )
+        request_hint.setWordWrap(True)
+        request_hint.setObjectName("section_label")
+        request_layout.addWidget(request_hint)
+        self._custom_prompt_edit = QTextEdit()
+        self._custom_prompt_edit.setPlaceholderText("Describe what you want the selected photos to show…")
+        self._custom_prompt_edit.setMinimumHeight(76)
+        self._custom_prompt_edit.setMaximumHeight(120)
+        request_layout.addWidget(self._custom_prompt_edit)
+        weight_form = QFormLayout()
+        self._custom_prompt_weight_spin = QDoubleSpinBox()
+        self._custom_prompt_weight_spin.setRange(0.0, 100.0)
+        self._custom_prompt_weight_spin.setSingleStep(5.0)
+        self._custom_prompt_weight_spin.setDecimals(0)
+        self._custom_prompt_weight_spin.setSuffix(" %")
+        self._custom_prompt_weight_spin.setToolTip("How strongly the custom request affects the final ranking. Default: 30%.")
+        weight_form.addRow("Request Weight:", self._custom_prompt_weight_spin)
+        request_layout.addLayout(weight_form)
+        layout.addWidget(request)
+
         req = QGroupBox("Required Composition")
         form = QFormLayout(req)
         self._req_face_only = self._count_spin(); self._req_full_body = self._count_spin()
@@ -277,6 +304,8 @@ class SettingsPanel(QWidget):
     def _connect_settings_widget(self, widget: QWidget) -> None:
         if isinstance(widget, QLineEdit):
             widget.textChanged.connect(self._on_changed)
+        elif isinstance(widget, QTextEdit):
+            widget.textChanged.connect(self._on_changed)
         elif isinstance(widget, QComboBox):
             widget.currentIndexChanged.connect(self._on_changed)
         elif isinstance(widget, QCheckBox):
@@ -292,6 +321,7 @@ class SettingsPanel(QWidget):
             self._detector_model_edit, self._detector_conf_spin,
             self._target_spin, self._padding_spin, self._canvas_w_spin, self._canvas_h_spin,
             self._min_subject_percent_spin, self._target_subject_percent_spin,
+            self._custom_prompt_edit, self._custom_prompt_weight_spin,
             self._req_face_only, self._req_full_body, self._req_front, self._req_side,
             self._req_back, self._req_male, self._req_female, self._req_face_visible,
             self._req_body_visible, self._req_nsfw, self._req_exclude_blurry,
@@ -323,6 +353,8 @@ class SettingsPanel(QWidget):
         self._min_w_spin.setValue(s.min_image_width)
         self._min_h_spin.setValue(s.min_image_height)
         self._similarity_spin.setValue(s.phash_threshold)
+        self._custom_prompt_edit.setPlainText(str(getattr(s, "custom_prompt", "")))
+        self._custom_prompt_weight_spin.setValue(max(0.0, min(100.0, float(getattr(s, "custom_prompt_weight", 30.0)))))
 
         r = s.mosaic_requirements
         for widget, value in (
@@ -372,6 +404,8 @@ class SettingsPanel(QWidget):
         s.min_image_width = self._min_w_spin.value()
         s.min_image_height = self._min_h_spin.value()
         s.phash_threshold = self._similarity_spin.value()
+        s.custom_prompt = self._custom_prompt_edit.toPlainText().strip()[:2000]
+        s.custom_prompt_weight = max(0.0, min(100.0, self._custom_prompt_weight_spin.value()))
 
         r = s.mosaic_requirements
         r.min_face_only = self._req_face_only.value()

@@ -21,13 +21,23 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
-from engine.models import ImageAnalysis
+from engine.models import ImageAnalysis, RejectReason
 
 logger = logging.getLogger("cache")
 
 _CACHE_VERSION = 2
 _DEFAULT_CACHE_FILENAME = "analysis_cache.json"
 _DEFAULT_CACHE_DIRNAME = ".aimosaic"
+
+
+def _is_reusable_analysis(analysis: ImageAnalysis) -> bool:
+    """Return True only for real model analysis results that are safe to cache.
+
+    LLM/runtime failures use the `llm_error` reject reason. Those records must
+    never become cache hits because a transient software/model failure would
+    otherwise permanently poison the analysis for that image.
+    """
+    return analysis.reject_reason != RejectReason.LLM_ERROR.value
 
 
 class AnalysisCache:
@@ -83,6 +93,15 @@ class AnalysisCache:
                     f"cached={analysis.analysis_version} requested={_CACHE_VERSION}"
                 )
                 return None
+            if not _is_reusable_analysis(analysis):
+                logger.info(
+                    "[cache] INVALIDATE failed analysis %s… reason=%s",
+                    file_hash[:12],
+                    analysis.reject_reason,
+                )
+                self._data.pop(file_hash, None)
+                self._dirty = True
+                return None
             logger.debug(
                 f"[cache] HIT  {file_hash[:12]}… "
                 f"path={entry.get('path', '?')}"
@@ -95,7 +114,7 @@ class AnalysisCache:
     def get_by_path(self, path: str, model: str = "") -> Optional[ImageAnalysis]:
         """Hydrate an analysis from a source-folder cache without hashing the file."""
         requested = Path(path).expanduser().resolve()
-        for entry in self._data.values():
+        for file_hash, entry in list(self._data.items()):
             if entry.get("analysis_version") != _CACHE_VERSION:
                 continue
             if model and entry.get("model", "") != model:
@@ -109,6 +128,15 @@ class AnalysisCache:
                 analysis = ImageAnalysis.from_dict(entry["analysis_result"])
                 if analysis.analysis_version != _CACHE_VERSION:
                     continue
+                if not _is_reusable_analysis(analysis):
+                    logger.info(
+                        "[cache] INVALIDATE failed path cache path=%s reason=%s",
+                        path,
+                        analysis.reject_reason,
+                    )
+                    self._data.pop(file_hash, None)
+                    self._dirty = True
+                    return None
                 logger.debug("[cache] PATH HIT path=%s", path)
                 return analysis
             except Exception:
@@ -117,6 +145,14 @@ class AnalysisCache:
         return None
 
     def put(self, file_hash: str, path: str, analysis: ImageAnalysis, model: str = "") -> None:
+        """Store only reusable analysis results; never cache LLM/runtime failures."""
+        if not _is_reusable_analysis(analysis):
+            logger.debug(
+                "[cache] SKIP failed analysis %s… reason=%s",
+                file_hash[:12],
+                analysis.reject_reason,
+            )
+            return
         self._data[file_hash] = {
             "file_hash": file_hash,
             "path": path,

@@ -48,7 +48,6 @@ class SettingsPanel(QWidget):
         self._populate(settings)
         self._building = False
 
-    # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
@@ -115,7 +114,6 @@ class SettingsPanel(QWidget):
 
     def _build_project_tab(self) -> QWidget:
         content, layout = self._tab_container()
-
         source = QGroupBox("Source")
         source_form = QFormLayout(source)
         self._folder_edit = QLineEdit()
@@ -138,7 +136,6 @@ class SettingsPanel(QWidget):
 
     def _build_analysis_tab(self) -> QWidget:
         content, layout = self._tab_container()
-
         inference = QGroupBox("Vision Inference")
         form = QFormLayout(inference)
         self._gpu_spin = QSpinBox(); self._gpu_spin.setRange(-1, 999); self._gpu_spin.setSuffix(" layers"); self._gpu_spin.setToolTip("-1 = all layers, 0 = CPU only")
@@ -172,7 +169,6 @@ class SettingsPanel(QWidget):
 
     def _build_mosaic_tab(self) -> QWidget:
         content, layout = self._tab_container()
-
         mosaic = QGroupBox("Layout")
         form = QFormLayout(mosaic)
         self._target_spin = QSpinBox(); self._target_spin.setRange(0, 200); self._target_spin.setSuffix(" images"); self._target_spin.setToolTip("0 = Automatic. Any positive number is allowed.")
@@ -188,11 +184,7 @@ class SettingsPanel(QWidget):
         form.addRow("Min Subject:", self._min_subject_percent_spin)
         form.addRow("Target Subject:", self._target_subject_percent_spin)
         layout.addWidget(mosaic)
-
-        explanation = QLabel(
-            "Subject sizes are relative to canvas height. The minimum is a hard lower bound; "
-            "the target is preferred when choosing the best layout."
-        )
+        explanation = QLabel("Subject sizes are relative to canvas height. The minimum is a hard lower bound; the target is preferred when choosing the best layout.")
         explanation.setWordWrap(True)
         explanation.setObjectName("section_label")
         layout.addWidget(explanation)
@@ -201,7 +193,6 @@ class SettingsPanel(QWidget):
 
     def _build_filters_tab(self) -> QWidget:
         content, layout = self._tab_container()
-
         req = QGroupBox("Required Composition")
         form = QFormLayout(req)
         self._req_face_only = self._count_spin(); self._req_full_body = self._count_spin()
@@ -264,7 +255,6 @@ class SettingsPanel(QWidget):
         layout.addStretch(1)
         return self._scroll_tab(content)
 
-    # ------------------------------------------------------------- helpers
     @staticmethod
     def _count_spin() -> QSpinBox:
         spin = QSpinBox()
@@ -317,7 +307,7 @@ class SettingsPanel(QWidget):
         self._mmproj_edit.setText(s.mmproj_path)
         self._gpu_spin.setValue(s.n_gpu_layers)
         self._ctx_spin.setValue(max(2048, int(s.n_ctx)))
-        self._max_tokens_spin.setValue(max(64, min(4096, int(s.max_tokens)))
+        self._max_tokens_spin.setValue(max(64, min(4096, int(s.max_tokens))))
         self._threads_spin.setValue(s.n_threads)
         self._batch_threads_spin.setValue(s.n_threads_batch)
         self._n_batch_spin.setValue(s.n_batch)
@@ -412,7 +402,6 @@ class SettingsPanel(QWidget):
         if not self._building:
             self.settings_changed.emit(self.current_settings())
 
-    # ---------------------------------------------------------- state API
     def set_source_folder(self, folder: str) -> None:
         self._building = True
         self._folder_edit.setText(folder)
@@ -422,7 +411,10 @@ class SettingsPanel(QWidget):
         self._btn_open_folder.setEnabled(not active)
         self._btn_analyze.setEnabled(not active)
         self._btn_stop.setEnabled(active)
-        self._btn_generate.setEnabled(False if active else self._btn_generate.isEnabled())
+        if active:
+            self._btn_generate.setEnabled(False)
+            self._btn_preview.setEnabled(False)
+            self._btn_export_mosaic.setEnabled(False)
 
     def set_generate_enabled(self, enabled: bool) -> None:
         self._btn_generate.setEnabled(bool(enabled))
@@ -433,7 +425,6 @@ class SettingsPanel(QWidget):
     def set_export_mosaic_enabled(self, enabled: bool) -> None:
         self._btn_export_mosaic.setEnabled(bool(enabled))
 
-    # --------------------------------------------------------------- browse
     def _browse_model(self) -> None:
         from PySide6.QtWidgets import QFileDialog
         start = os.path.dirname(self._model_edit.text()) or os.path.expanduser("~")

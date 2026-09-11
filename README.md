@@ -163,7 +163,7 @@ Install **Python 3.12**, clone/download this repository, then run:
 install_windows.bat
 ```
 
-The installer creates an isolated `.venv`, installs the normal Python dependencies, asks whether llama.cpp should use CPU or NVIDIA CUDA, installs the corresponding `llama-cpp-python` runtime, and verifies the application imports.
+The installer creates an isolated `.venv`, temporarily filters `llama-cpp-python` out of the generic dependency install, asks whether llama.cpp should use CPU or NVIDIA CUDA, installs the corresponding `llama-cpp-python` runtime, and verifies the application imports.
 
 Supported installer choices currently include:
 
@@ -182,20 +182,20 @@ For the complete Windows installation procedure, troubleshooting, and manual ins
 INSTALL_WINDOWS.md
 ```
 
-### Why llama.cpp is installed separately
+### Why the installer handles llama.cpp separately
 
-`llama-cpp-python` is intentionally **not** installed by the normal `requirements.txt` file. CPU and CUDA builds are hardware/platform dependent. Keeping it separate prevents a normal dependency installation from silently replacing a working GPU build with a CPU build or attempting an unsuitable local compilation.
+`llama-cpp-python` remains listed in `requirements.txt` because it is a real application dependency. However, a generic `pip install -r requirements.txt` cannot know whether the machine needs a CPU or CUDA build.
 
-The dependency architecture is therefore:
+`install_windows.bat` therefore filters that single package temporarily, installs the common dependencies, and then installs the selected CPU/CUDA build explicitly.
 
 ```text
 requirements.txt
     ↓
 Common Python dependencies
     ↓
-install_windows.bat
+install_windows.bat selects runtime
     ↓
-CPU/CUDA llama.cpp runtime
+CPU/CUDA llama.cpp
     ↓
 AI Mosaic Builder
 ```
@@ -208,7 +208,8 @@ The upstream llama-cpp-python project documents both pre-built CPU/CUDA wheels a
 py -3.12 -m venv .venv
 .venv\Scripts\activate
 python -m pip install --upgrade pip setuptools wheel
-python -m pip install -r requirements.txt
+findstr /V /I /C:"llama-cpp-python" requirements.txt > requirements_base.txt
+python -m pip install -r requirements_base.txt
 ```
 
 CPU llama.cpp:

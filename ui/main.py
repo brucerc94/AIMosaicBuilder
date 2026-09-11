@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 
 from PySide6.QtCore import QThreadPool
-from PySide6.QtWidgets import QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
 from engine.cache import get_cache, source_cache_dir
 from engine.image_analyzer import build_record, discover_images
@@ -53,7 +53,7 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _get_cache_for_source(source_folder: str):
-        """Get the analysis cache owned by the selected source folder."""
+        """Get the analysis cache owned by the selected source/project folder."""
         if source_folder and Path(source_folder).is_dir():
             return get_cache(str(source_cache_dir(source_folder)))
         return get_cache("")
@@ -84,6 +84,7 @@ class MainWindow(QMainWindow):
 
     def _connect(self) -> None:
         self.settings_panel.settings_changed.connect(self._settings_changed)
+        self.settings_panel.open_folder_requested.connect(self._open_folder)
         self.settings_panel.analyze_requested.connect(self._start_analysis)
         self.settings_panel.stop_requested.connect(self._stop)
         self.settings_panel.generate_requested.connect(self._generate_project)
@@ -100,6 +101,86 @@ class MainWindow(QMainWindow):
         if settings.last_source_folder:
             self._cache = self._get_cache_for_source(settings.last_source_folder)
         save_settings(settings)
+
+    def _open_folder(self) -> None:
+        """Load a source folder and cached analysis without loading/invoking the model."""
+        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker:
+            return
+
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Open Image Folder",
+            self._settings.last_source_folder or str(Path.home()),
+        )
+        if not folder:
+            return
+
+        self._load_source_folder(folder)
+
+    def _load_source_folder(self, folder: str) -> None:
+        source = Path(folder).expanduser().resolve()
+        if not source.is_dir():
+            QMessageBox.warning(self, "Source folder", "The selected folder is not valid.")
+            return
+
+        self._settings.last_source_folder = str(source)
+        self._settings.cache_directory = str(source_cache_dir(source))
+        save_settings(self._settings)
+        self.settings_panel.set_source_folder(str(source))
+
+        self._cache = self._get_cache_for_source(str(source))
+        self._paths = discover_images(str(source))
+
+        if not self._paths:
+            self._records = []
+            self.grid.clear()
+            self.details.clear()
+            self.settings_panel.set_generate_enabled(False)
+            self.settings_panel.set_preview_enabled(False)
+            self._summary.setText(f"No supported images found in {source}")
+            return
+
+        # Populate the UI immediately from filesystem entries. Cached AI analysis
+        # is hydrated by stored source path; Analyze later validates cache by
+        # content hash before deciding whether model inference is required.
+        model_hint = Path(self._settings.model_path).name if self._settings.model_path else ""
+        records: list[ImageRecord] = []
+        cache_hits = 0
+        for path in self._paths:
+            p = Path(path)
+            try:
+                file_size = p.stat().st_size
+            except OSError:
+                file_size = 0
+            record = ImageRecord(
+                path=str(p),
+                filename=p.name,
+                file_size=file_size,
+                status=ImageStatus.PENDING,
+            )
+            cached = self._cache.get_by_path(str(p), model=model_hint)
+            if cached is not None:
+                record.analysis = cached
+                record.status = ImageStatus.CACHED
+                cache_hits += 1
+            records.append(record)
+
+        self._records = records
+        self.grid.load_records(records)
+        self.details.clear()
+        self.settings_panel.set_analyzing(False)
+        self.settings_panel.set_generate_enabled(False)
+        self.settings_panel.set_preview_enabled(False)
+        self._summary.setText(
+            f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | Ready to Analyze"
+        )
+        logger.info(
+            "[source] Open Folder | folder=%s | images=%d | cache_hits=%d | model_loaded=%s",
+            source,
+            len(records),
+            cache_hits,
+            self._engine.model_loaded,
+        )
 
     def _start_analysis(self) -> None:
         if self._loader or self._analysis_worker or self._post_worker or self._generate_worker:

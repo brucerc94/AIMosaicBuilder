@@ -17,6 +17,7 @@ class SettingsPanel(BaseSettingsPanel):
     """Base settings panel plus persisted generation and mosaic preview controls."""
 
     preview_requested = Signal()
+    open_folder_requested = Signal()
 
     def __init__(self, settings: AppSettings, parent=None) -> None:
         super().__init__(settings, parent)
@@ -27,6 +28,7 @@ class SettingsPanel(BaseSettingsPanel):
         self._max_tokens_spin.valueChanged.connect(self._on_max_tokens_changed)
         self._add_subject_size_controls(settings)
         self._add_preview_control()
+        self._add_open_folder_control()
 
     def _add_max_tokens_control(self) -> None:
         inference_group = next(
@@ -102,6 +104,21 @@ class SettingsPanel(BaseSettingsPanel):
         self._btn_preview.clicked.connect(self.preview_requested.emit)
         actions_group.layout().addWidget(self._btn_preview)
 
+    def _add_open_folder_control(self) -> None:
+        actions_group = next(
+            (group for group in self.findChildren(QGroupBox) if group.title() == "Actions"),
+            None,
+        )
+        if actions_group is None or actions_group.layout() is None:
+            raise RuntimeError("Could not locate Actions settings group.")
+
+        self._btn_open_folder = QPushButton("📂  Open Folder")
+        self._btn_open_folder.setToolTip(
+            "Open an image folder and load its existing cache without starting model analysis."
+        )
+        self._btn_open_folder.clicked.connect(self.open_folder_requested.emit)
+        actions_group.layout().insertWidget(0, self._btn_open_folder)
+
     def set_preview_enabled(self, enabled: bool) -> None:
         self._btn_preview.setEnabled(bool(enabled))
 
@@ -134,3 +151,9 @@ class SettingsPanel(BaseSettingsPanel):
                 self._target_subject_percent_spin.blockSignals(False)
             self.set_preview_enabled(False)
             self.settings_changed.emit(self.current_settings())
+
+    def set_source_folder(self, folder: str) -> None:
+        """Update the visible source folder without triggering a settings event."""
+        self._building = True
+        self._folder_edit.setText(folder)
+        self._building = False

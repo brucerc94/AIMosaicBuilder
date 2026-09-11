@@ -34,20 +34,12 @@ from engine.vision_llm import VisionLLMEngine
 
 logger = logging.getLogger("image_analyzer")
 
-# Supported image extensions
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
-
-# Minimum file size (1 KB) — skip obviously corrupt tiny files
 _MIN_FILE_SIZE = 1024
 
 
-# ─── Discovery ────────────────────────────────────────────────────────────────
-
 def discover_images(folder: str) -> list[str]:
-    """
-    Recursively find all image files under folder.
-    Returns absolute paths sorted alphabetically.
-    """
+    """Recursively find all image files under folder."""
     folder_path = Path(folder)
     if not folder_path.is_dir():
         logger.error(f"[analyzer] Not a directory: {folder}")
@@ -64,13 +56,8 @@ def discover_images(folder: str) -> list[str]:
     return found
 
 
-# ─── Pre-filter ───────────────────────────────────────────────────────────────
-
 def prefilter_image(path: str, settings: AppSettings) -> tuple[bool, str]:
-    """
-    Quick checks before spending inference on an image.
-    Returns (passed: bool, reason: str).
-    """
+    """Quick checks before spending inference on an image."""
     try:
         size = os.path.getsize(path)
     except OSError as e:
@@ -79,16 +66,14 @@ def prefilter_image(path: str, settings: AppSettings) -> tuple[bool, str]:
     if size < _MIN_FILE_SIZE:
         return False, RejectReason.CORRUPT.value
 
-    # Try opening with Pillow to check dimensions and integrity
     try:
         from PIL import Image as PILImage
         with PILImage.open(path) as img:
             w, h = img.size
-            img.verify()  # checks file integrity (does NOT decode fully)
+            img.verify()
     except Exception as e:
         return False, f"{RejectReason.CORRUPT.value}: {e}"
 
-    # Re-open to get dimensions after verify() (verify leaves file in bad state)
     try:
         from PIL import Image as PILImage
         with PILImage.open(path) as img:
@@ -112,13 +97,8 @@ def get_image_dimensions(path: str) -> tuple[int, int]:
         return 0, 0
 
 
-# ─── Perceptual hashing ───────────────────────────────────────────────────────
-
 def compute_phash(path: str) -> str:
-    """
-    Compute a perceptual hash string for image similarity detection.
-    Falls back to empty string if imagehash is not installed.
-    """
+    """Compute a perceptual hash string for image similarity detection."""
     try:
         import imagehash  # type: ignore
         from PIL import Image as PILImage
@@ -133,9 +113,7 @@ def compute_phash(path: str) -> str:
 
 
 def are_similar(phash_a: str, phash_b: str, threshold: int = 10) -> bool:
-    """
-    Return True if two phash strings are within Hamming distance threshold.
-    """
+    """Return True if two phash strings are within Hamming distance threshold."""
     if not phash_a or not phash_b:
         return False
     try:
@@ -146,8 +124,6 @@ def are_similar(phash_a: str, phash_b: str, threshold: int = 10) -> bool:
     except Exception:
         return False
 
-
-# ─── Build ImageRecord from path ──────────────────────────────────────────────
 
 def build_record(path: str) -> ImageRecord:
     """Build a minimal ImageRecord from file path (before analysis)."""
@@ -169,16 +145,19 @@ def build_record(path: str) -> ImageRecord:
     )
 
 
-# ─── Main analysis pipeline ───────────────────────────────────────────────────
+def cache_model_key(model_name: str, custom_prompt: str = "") -> str:
+    """Return a cache model identifier that changes when the custom request changes."""
+    request = (custom_prompt or "").strip()[:2000]
+    if not request:
+        return model_name
+    digest = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
+    return f"{model_name}|request:{digest}"
+
 
 class AnalysisPipeline:
     """
     Orchestrates the full per-image pipeline:
       pre-filter → hash → cache check → LLM analysis → store
-
-    Designed to be run from a QThread worker.
-    progress_callback receives (done: int, total: int, record: ImageRecord).
-    cancel_check returns True when the user pressed Stop.
     """
 
     def __init__(
@@ -195,7 +174,6 @@ class AnalysisPipeline:
         self._progress_callback = progress_callback
         self._cancel_check = cancel_check
 
-        # Stats for logging
         self._n_cache_hits = 0
         self._n_cache_misses = 0
         self._n_prefilter_rejected = 0
@@ -204,23 +182,23 @@ class AnalysisPipeline:
         self._inference_seconds = 0.0
 
     def run(self, paths: list[str]) -> list[ImageRecord]:
-        """
-        Process a list of image paths and return ImageRecord list.
-        Records for previously cached images are restored from cache.
-        """
+        """Process image paths, reusing cache only for the same model + custom request."""
         run_started = time.perf_counter()
         total = len(paths)
         results: list[ImageRecord] = []
         model_name = self._engine.model_name
+        custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()[:2000]
+        cache_model = cache_model_key(model_name, custom_prompt)
 
         logger.info(
-            "[analyzer] START | images=%d | model=%s | engine_loaded=%s",
+            "[analyzer] START | images=%d | model=%s | engine_loaded=%s | custom_request=%s",
             total,
             model_name or "unknown",
             self._engine.model_loaded,
+            "yes" if custom_prompt else "no",
         )
 
-        seen_hashes: set[str] = set()   # for exact-duplicate detection
+        seen_hashes: set[str] = set()
 
         for idx, path in enumerate(paths):
             if self._cancel_check and self._cancel_check():
@@ -230,7 +208,6 @@ class AnalysisPipeline:
             image_started = time.perf_counter()
             record = build_record(path)
 
-            # ── Step 1: pre-filter ─────────────────────────────────────────────
             prefilter_started = time.perf_counter()
             passed, reason = prefilter_image(path, self._settings)
             prefilter_elapsed = time.perf_counter() - prefilter_started
@@ -240,11 +217,7 @@ class AnalysisPipeline:
                 self._n_prefilter_rejected += 1
                 logger.info(
                     "[analyzer] REJECT PREFILTER | %d/%d | image=%s | prefilter=%.3fs | reason=%s",
-                    idx + 1,
-                    total,
-                    Path(path).name,
-                    prefilter_elapsed,
-                    reason,
+                    idx + 1, total, Path(path).name, prefilter_elapsed, reason,
                 )
                 results.append(record)
                 self._emit_progress(idx + 1, total, record)
@@ -252,7 +225,6 @@ class AnalysisPipeline:
 
             record.status = ImageStatus.PREFILTERED
 
-            # ── Step 2: compute file hash ──────────────────────────────────────
             hash_started = time.perf_counter()
             try:
                 file_hash = compute_file_hash(path)
@@ -267,25 +239,20 @@ class AnalysisPipeline:
                 continue
             hash_elapsed = time.perf_counter() - hash_started
 
-            # ── Step 3: exact duplicate check ──────────────────────────────────
             if file_hash in seen_hashes:
                 record.status = ImageStatus.REJECTED
                 record.error_message = RejectReason.SIMILAR.value
                 logger.info(
                     "[analyzer] REJECT DUPLICATE | %d/%d | image=%s | hash=%.3fs",
-                    idx + 1,
-                    total,
-                    Path(path).name,
-                    hash_elapsed,
+                    idx + 1, total, Path(path).name, hash_elapsed,
                 )
                 results.append(record)
                 self._emit_progress(idx + 1, total, record)
                 continue
             seen_hashes.add(file_hash)
 
-            # ── Step 4: cache check ────────────────────────────────────────────
             cache_started = time.perf_counter()
-            cached = self._cache.get(file_hash, model=model_name)
+            cached = self._cache.get(file_hash, model=cache_model)
             cache_elapsed = time.perf_counter() - cache_started
             if cached is not None:
                 record.analysis = cached
@@ -293,19 +260,13 @@ class AnalysisPipeline:
                 self._n_cache_hits += 1
                 if cached.has_person:
                     self._n_people += 1
-                # Still compute phash (needed for diversity, not cached by analysis)
                 phash_started = time.perf_counter()
                 record.phash = compute_phash(path)
                 phash_elapsed = time.perf_counter() - phash_started
                 total_elapsed = time.perf_counter() - image_started
                 logger.info(
                     "[analyzer] CACHE HIT | %d/%d | image=%s | cache=%.3fs | phash=%.3fs | total=%.3fs",
-                    idx + 1,
-                    total,
-                    Path(path).name,
-                    cache_elapsed,
-                    phash_elapsed,
-                    total_elapsed,
+                    idx + 1, total, Path(path).name, cache_elapsed, phash_elapsed, total_elapsed,
                 )
                 results.append(record)
                 self._emit_progress(idx + 1, total, record)
@@ -314,20 +275,19 @@ class AnalysisPipeline:
             self._n_cache_misses += 1
             logger.info(
                 "[analyzer] CACHE MISS | %d/%d | image=%s | hash=%.3fs | cache=%.3fs",
-                idx + 1,
-                total,
-                Path(path).name,
-                hash_elapsed,
-                cache_elapsed,
+                idx + 1, total, Path(path).name, hash_elapsed, cache_elapsed,
             )
 
-            # ── Step 5: LLM analysis ───────────────────────────────────────────
             record.status = ImageStatus.ANALYZING
             self._emit_progress(idx + 1, total, record)
 
             t_start = time.perf_counter()
             try:
-                analysis = self._engine.analyze_image(path)
+                analysis = self._engine.analyze_image(
+                    path,
+                    max_tokens=int(getattr(self._settings, "max_tokens", 576)),
+                    custom_prompt=custom_prompt,
+                )
             except Exception as e:
                 logger.error(f"[analyzer] LLM error for {path}: {e}")
                 analysis = ImageAnalysis.error_result(str(e), model_name)
@@ -339,31 +299,22 @@ class AnalysisPipeline:
 
             record.analysis = analysis
             record.status = ImageStatus.ANALYZED if not analysis.reject else ImageStatus.REJECTED
-
             if analysis.has_person:
                 self._n_people += 1
 
-            # ── Step 6: compute phash ──────────────────────────────────────────
             phash_started = time.perf_counter()
             record.phash = compute_phash(path)
             phash_elapsed = time.perf_counter() - phash_started
 
-            # ── Step 7: store in cache ─────────────────────────────────────────
             cache_write_started = time.perf_counter()
-            self._cache.put(file_hash, path, analysis, model=model_name)
+            self._cache.put(file_hash, path, analysis, model=cache_model)
             self._cache.flush()
             cache_write_elapsed = time.perf_counter() - cache_write_started
 
             total_elapsed = time.perf_counter() - image_started
             logger.info(
                 "[analyzer] ANALYZED | %d/%d | image=%s | inference=%.2fs | phash=%.3fs | cache_write=%.3fs | total=%.2fs",
-                idx + 1,
-                total,
-                Path(path).name,
-                elapsed,
-                phash_elapsed,
-                cache_write_elapsed,
-                total_elapsed,
+                idx + 1, total, Path(path).name, elapsed, phash_elapsed, cache_write_elapsed, total_elapsed,
             )
 
             results.append(record)
@@ -372,22 +323,14 @@ class AnalysisPipeline:
         run_elapsed = time.perf_counter() - run_started
         avg_inference = self._inference_seconds / self._n_cache_misses if self._n_cache_misses else 0.0
         logger.info(
-            "[analyzer] END | total=%d | elapsed=%.2fs | cache_hits=%d | cache_misses=%d | inference_total=%.2fs | inference_avg=%.2fs | prefilter_rejected=%d | errors=%d | people_detected=%d",
-            total,
-            run_elapsed,
-            self._n_cache_hits,
-            self._n_cache_misses,
-            self._inference_seconds,
-            avg_inference,
-            self._n_prefilter_rejected,
-            self._n_errors,
-            self._n_people,
+            "[analyzer] END | total=%d | elapsed=%.2fs | cache_hits=%d | cache_misses=%d | inference_total=%.2fs | inference_avg=%.2fs | prefilter_rejected=%d | errors=%d | people_detected=%d | custom_request=%s",
+            total, run_elapsed, self._n_cache_hits, self._n_cache_misses, self._inference_seconds,
+            avg_inference, self._n_prefilter_rejected, self._n_errors, self._n_people,
+            "yes" if custom_prompt else "no",
         )
         return results
 
-    def _emit_progress(
-        self, done: int, total: int, record: ImageRecord
-    ) -> None:
+    def _emit_progress(self, done: int, total: int, record: ImageRecord) -> None:
         if self._progress_callback:
             try:
                 self._progress_callback(done, total, record)

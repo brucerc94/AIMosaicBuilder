@@ -249,7 +249,7 @@ class ImageCard(QFrame):
         return self._record
 
 
-# ─── ImageGrid ────────────────────────────────────────────────────────────────
+# ─── ImageGrid ───────────────────────────────────────────────────────────────
 
 class ImageGrid(QScrollArea):
     """
@@ -266,6 +266,10 @@ class ImageGrid(QScrollArea):
         self._records: list[ImageRecord] = []
         self._cards: dict[str, ImageCard] = {}   # path → card
         self._sort_order = SortOrder.SCORE
+        self._last_columns = -1
+        self._rebuilding = False
+        self._thumbnail_pending: set[str] = set()
+        self._thumbnail_loaded: set[str] = set()
         self._thumb_pool = ThumbnailPool(
             on_done=self._on_thumbnail_done,
             max_threads=4,
@@ -302,7 +306,6 @@ class ImageGrid(QScrollArea):
         card = self._cards.get(record.path)
         if card:
             card.update_from_record(record)
-            # Also trigger thumbnail load if not yet loaded
             self._request_thumbnail(record.path)
         else:
             # New card — add it
@@ -324,6 +327,8 @@ class ImageGrid(QScrollArea):
     def clear(self) -> None:
         self._records.clear()
         self._cards.clear()
+        self._thumbnail_pending.clear()
+        self._thumbnail_loaded.clear()
         self._rebuild_grid()
 
     def get_selected_records(self) -> list[ImageRecord]:
@@ -342,22 +347,32 @@ class ImageGrid(QScrollArea):
         return sorted(self._records, key=key_fn)
 
     def _rebuild_grid(self) -> None:
-        # Clear existing widgets
-        while self._grid.count():
-            item = self._grid.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        self._cards.clear()
+        if self._rebuilding:
+            return
 
-        sorted_recs = self._sorted_records()
-        for idx, record in enumerate(sorted_recs):
-            self._add_card(record, idx)
-            self._request_thumbnail(record.path)
+        self._rebuilding = True
+        try:
+            while self._grid.count():
+                item = self._grid.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+            self._cards.clear()
+
+            sorted_recs = self._sorted_records()
+            for idx, record in enumerate(sorted_recs):
+                self._add_card(record, idx)
+                self._request_thumbnail(record.path)
+        finally:
+            self._rebuilding = False
 
     def _refresh_layout(self) -> None:
-        """Re-sort without destroying existing cards."""
-        # Simpler: just rebuild — cards are lightweight
+        """Re-sort without allowing recursive rebuilds."""
+        self._last_columns = -1
         self._rebuild_grid()
+
+    def _column_count(self) -> int:
+        available_width = max(1, self.viewport().width())
+        return max(1, available_width // (_CARD_W + 8))
 
     def _add_card(self, record: ImageRecord, idx: int) -> None:
         card = ImageCard(record, self._container)
@@ -365,21 +380,34 @@ class ImageGrid(QScrollArea):
         card.include_toggled.connect(self.include_toggled.emit)
         card.exclude_toggled.connect(self.exclude_toggled.emit)
 
-        cols = max(1, self.width() // (_CARD_W + 8))
+        cols = max(1, self._last_columns if self._last_columns > 0 else self._column_count())
         row = idx // cols
         col = idx % cols
         self._grid.addWidget(card, row, col)
         self._cards[record.path] = card
 
     def _request_thumbnail(self, path: str) -> None:
+        if not path or path in self._thumbnail_pending or path in self._thumbnail_loaded:
+            return
+        self._thumbnail_pending.add(path)
         self._thumb_pool.request(path, _THUMB_SIZE)
 
     def _on_thumbnail_done(self, path: str, data: bytes) -> None:
+        self._thumbnail_pending.discard(path)
+        if data:
+            self._thumbnail_loaded.add(path)
         card = self._cards.get(path)
         if card and data:
             card.set_thumbnail(data)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        # Recalculate columns on resize
+        if self._rebuilding:
+            return
+
+        columns = self._column_count()
+        if columns == self._last_columns:
+            return
+
+        self._last_columns = columns
         self._rebuild_grid()

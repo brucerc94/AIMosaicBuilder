@@ -92,6 +92,12 @@ QPushButton#success_btn {
     font-weight: bold;
 }
 
+QPushButton#success_btn:disabled {
+    background-color: #45475a;
+    color: #6c7086;
+    border: none;
+}
+
 QLineEdit, QTextEdit, QPlainTextEdit {
     background-color: #313244;
     color: #cdd6f4;

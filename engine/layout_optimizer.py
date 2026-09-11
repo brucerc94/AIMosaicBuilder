@@ -137,16 +137,32 @@ def _required_names(requirements: MosaicRequirements) -> list[str]:
     return [name for name, count in pairs for _ in range(max(0, int(count)))]
 
 
+def _ensure_phash(record: ImageRecord) -> str:
+    """Return a record's pHash, computing it lazily for cache/session-loaded records."""
+    if record.phash:
+        return record.phash
+    if not record.path:
+        return ""
+    try:
+        from engine.image_analyzer import compute_phash
+        record.phash = compute_phash(record.path)
+    except Exception as exc:
+        logger.debug("[layout] Could not compute pHash for %s: %s", record.path, exc)
+    return record.phash
+
+
 def _too_similar(record: ImageRecord, selected: list[ImageRecord], threshold: int) -> bool:
-    if not record.phash:
+    current_phash = _ensure_phash(record)
+    if not current_phash:
         return False
     try:
         import imagehash
-        current = imagehash.hex_to_hash(record.phash)
-        return any(
-            other.phash and (current - imagehash.hex_to_hash(other.phash)) <= threshold
-            for other in selected
-        )
+        current = imagehash.hex_to_hash(current_phash)
+        for other in selected:
+            other_phash = _ensure_phash(other)
+            if other_phash and (current - imagehash.hex_to_hash(other_phash)) <= threshold:
+                return True
+        return False
     except Exception:
         return False
 
@@ -448,6 +464,13 @@ def _optimize_selected_layout(
             )
             if evaluation is None or len(evaluation.placements) != len(order):
                 continue
+            actual_target = float(target_subject_px)
+            target_error = abs(evaluation.average_subject_px - actual_target) / max(actual_target, 1.0)
+            target_bonus = max(0.0, 1.0 - min(target_error, 1.0))
+            evaluation.layout_score = 0.65 * evaluation.canvas_fill_ratio + 0.20 * (
+                max(0.0, min(1.0, (max(p.x + p.width for p in evaluation.placements) / canvas_w)
+                                  * (max(p.y + p.height for p in evaluation.placements) / canvas_h)))
+            ) + 0.10 * max(0.0, min(1.25, evaluation.average_subject_px / 260.0)) + 0.05 * target_bonus
             if best is None or evaluation.layout_score > best.layout_score + 1e-9:
                 best = evaluation
     return best

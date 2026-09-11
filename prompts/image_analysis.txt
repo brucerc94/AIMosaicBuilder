@@ -20,6 +20,7 @@ Required fields:
   "image_quality": number 0..1,
   "subject_quality": number 0..1,
   "mosaic_value": number 0..1,
+  "user_request_score": number 0..1,
   "visual_tags": {
     "framing": "face_only|head_shoulders|upper_body|half_body|full_body|unknown",
     "orientation": "front|three_quarter_front|side|three_quarter_back|back|unknown",
@@ -33,4 +34,8 @@ Required fields:
   "notes": string
 }
 Be conservative. gender_presentation is visual presentation only.
+If no custom user request is supplied, set user_request_score to 1.0.
+If a custom user request is supplied, score only how well the photograph satisfies that request:
+0 = does not satisfy it, 0.5 = partially satisfies it, 1 = satisfies it very well.
+Do not let the custom request change the meaning of the other required fields.
 For "notes", write one concise sentence (preferably under 25 words) describing the most useful visual fact about the person/photo for mosaic selection, such as framing, pose, visibility, composition, quality, or notable limitations.

@@ -1,6 +1,6 @@
 # AI Mosaic Builder — Windows Installation
 
-This guide installs AI Mosaic Builder in an isolated `.venv` and installs the correct `llama-cpp-python` runtime separately from the normal Python dependencies.
+This guide installs AI Mosaic Builder in an isolated `.venv` and selects the correct `llama-cpp-python` CPU/CUDA runtime for the machine.
 
 ## Recommended setup
 
@@ -31,11 +31,12 @@ The installer will:
 1. Verify Python 3.12.
 2. Create `.venv` if it does not exist.
 3. Upgrade `pip`, `setuptools`, and `wheel`.
-4. Install `requirements.txt`.
-5. Ask whether llama.cpp should use CPU or NVIDIA CUDA.
-6. Install the selected `llama-cpp-python` wheel.
-7. Verify imports for PySide6, Pillow, NumPy, OpenCV, Ultralytics, imagehash, and llama.cpp.
-8. Verify that `main.py` imports successfully.
+4. Temporarily remove `llama-cpp-python` from the dependency install so pip cannot choose an unsuitable build.
+5. Install the remaining dependencies from `requirements.txt`.
+6. Ask whether llama.cpp should use CPU or NVIDIA CUDA.
+7. Install the selected `llama-cpp-python` wheel.
+8. Verify imports for PySide6, Pillow, NumPy, OpenCV, Ultralytics, imagehash, and llama.cpp.
+9. Verify that `main.py` imports successfully.
 
 ## CUDA choices
 
@@ -69,11 +70,14 @@ Upgrade packaging tools:
 python -m pip install --upgrade pip setuptools wheel
 ```
 
-Install the normal dependencies:
+Install the normal dependencies **without llama.cpp**:
 
 ```bat
-python -m pip install -r requirements.txt
+findstr /V /I /C:"llama-cpp-python" requirements.txt > requirements_base.txt
+python -m pip install -r requirements_base.txt
 ```
+
+Then install one llama.cpp runtime.
 
 ### CPU llama.cpp
 
@@ -104,6 +108,24 @@ python -m pip install llama-cpp-python
 
 A source build requires an appropriate C/C++ build toolchain and CUDA development environment.
 
+## Why the installer handles llama.cpp separately
+
+`requirements.txt` intentionally records `llama-cpp-python` because it is a real application dependency. However, a generic `pip install -r requirements.txt` does not know whether the machine needs a CPU or CUDA build.
+
+`install_windows.bat` therefore filters that single package temporarily, installs the common dependencies, and then installs the selected CPU/CUDA build explicitly.
+
+```text
+requirements.txt
+    ↓
+Common Python dependencies
+    ↓
+install_windows.bat selects runtime
+    ↓
+CPU/CUDA llama.cpp
+    ↓
+AI Mosaic Builder
+```
+
 ## Start the application
 
 ```bat
@@ -128,24 +150,6 @@ mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf
 ```
 
 The model and projector must be a compatible pair.
-
-## Why llama.cpp is not pinned in requirements.txt
-
-`llama-cpp-python` is intentionally installed separately because CPU and CUDA builds are hardware/platform-specific. A normal `pip install -r requirements.txt` should not silently replace a working CUDA build with a CPU build or attempt an unsuitable local compilation.
-
-The application therefore has two dependency layers:
-
-```text
-requirements.txt
-    ↓
-common Python packages
-
-install_windows.bat
-    ↓
-CPU/CUDA llama.cpp runtime
-    ↓
-AI Mosaic Builder
-```
 
 ## Reinstalling
 

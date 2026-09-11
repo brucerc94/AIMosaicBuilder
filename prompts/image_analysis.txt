@@ -1,0 +1,36 @@
+[SYSTEM]
+You are a photo evaluator for a portrait mosaic.
+Analyze the supplied photograph and return ONLY one valid JSON object.
+Do not explain anything. Use unknown for uncertain visual attributes.
+Include a concise human-readable note in the "notes" field summarizing the most useful visual observation for mosaic selection.
+
+[USER]
+Analyze this photo for a portrait mosaic. Return ONLY JSON.
+Required fields:
+{
+  "has_person": boolean,
+  "person_count": integer,
+  "main_subject_is_person": boolean,
+  "person_visibility": number 0..1,
+  "face_visible": boolean,
+  "body_visible": boolean,
+  "occluded": boolean,
+  "blur": number 0..1,
+  "composition": number 0..1,
+  "image_quality": number 0..1,
+  "subject_quality": number 0..1,
+  "mosaic_value": number 0..1,
+  "visual_tags": {
+    "framing": "face_only|head_shoulders|upper_body|half_body|full_body|unknown",
+    "orientation": "front|three_quarter_front|side|three_quarter_back|back|unknown",
+    "gender_presentation": "male|female|unknown",
+    "content_rating": "safe|suggestive|explicit|unknown",
+    "pose": "standing|seated|lying|walking|other|unknown",
+    "looking_at_camera": boolean
+  },
+  "reject": boolean,
+  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty",
+  "notes": string
+}
+Be conservative. gender_presentation is visual presentation only.
+For "notes", write one concise sentence (preferably under 25 words) describing the most useful visual fact about the person/photo for mosaic selection, such as framing, pose, visibility, composition, quality, or notable limitations.

@@ -140,13 +140,16 @@ class ImageDetailPanel(QWidget):
         _, self._lbl_score = score_row("Final Score:")
         _, self._lbl_rank = score_row("Rank:")
         _, self._lbl_quality = score_row("Image Quality:")
+        _, self._lbl_subject_quality = score_row("Subject Quality:")
         _, self._lbl_person_vis = score_row("Person Visibility:")
         _, self._lbl_composition = score_row("Composition:")
+        _, self._lbl_sharpness = score_row("Sharpness:")
         _, self._lbl_blur = score_row("Blur:")
         _, self._lbl_person_cnt = score_row("Persons:")
         _, self._lbl_face = score_row("Face Visible:")
         _, self._lbl_body = score_row("Body Visible:")
         _, self._lbl_mosaic = score_row("Mosaic Value:")
+        _, self._lbl_user_request = score_row("User Request:")
         _, self._lbl_status = score_row("Status:")
         layout.addWidget(scores_grp)
 
@@ -231,9 +234,10 @@ class ImageDetailPanel(QWidget):
         self._preview_label.set_bbox(None)
         self._crop_label.setText("—")
         for lbl in [
-            self._lbl_score, self._lbl_rank, self._lbl_quality, self._lbl_person_vis,
-            self._lbl_composition, self._lbl_blur, self._lbl_person_cnt, self._lbl_face,
-            self._lbl_body, self._lbl_mosaic, self._lbl_status, self._lbl_framing,
+            self._lbl_score, self._lbl_rank, self._lbl_quality, self._lbl_subject_quality,
+            self._lbl_person_vis, self._lbl_composition, self._lbl_sharpness, self._lbl_blur,
+            self._lbl_person_cnt, self._lbl_face, self._lbl_body, self._lbl_mosaic,
+            self._lbl_user_request, self._lbl_status, self._lbl_framing,
             self._lbl_orientation, self._lbl_gender, self._lbl_content, self._lbl_pose,
             self._lbl_gaze,
         ]:
@@ -264,13 +268,16 @@ class ImageDetailPanel(QWidget):
         self._lbl_score.setText(f"{r.final_score:.1f} / 100" if r else "—")
         self._lbl_rank.setText(f"#{r.rank}" if (r and r.rank > 0) else "—")
         self._lbl_quality.setText(f"{a.image_quality:.0%}" if a else "—")
+        self._lbl_subject_quality.setText(f"{a.subject_quality:.0%}" if a else "—")
         self._lbl_person_vis.setText(f"{a.person_visibility:.0%}" if a else "—")
         self._lbl_composition.setText(f"{a.composition:.0%}" if a else "—")
+        self._lbl_sharpness.setText(f"{1.0 - a.blur:.0%}" if a else "—")
         self._lbl_blur.setText(f"{a.blur:.0%}" if a else "—")
         self._lbl_person_cnt.setText(str(a.person_count) if a else "—")
         self._lbl_face.setText(("Yes" if a.face_visible else "No") if a else "—")
         self._lbl_body.setText(("Yes" if a.body_visible else "No") if a else "—")
         self._lbl_mosaic.setText(f"{a.mosaic_value:.0%}" if a else "—")
+        self._lbl_user_request.setText(f"{a.user_request_score:.0%}" if a else "—")
         self._lbl_status.setText(record.status.value.upper())
 
     def _update_tags(self, record: ImageRecord) -> None:
@@ -281,6 +288,7 @@ class ImageDetailPanel(QWidget):
         content = str(tags.get("content_rating", "unknown"))
         content_label = {
             "safe": "SFW",
+            "nsfw": "NSFW",
             "suggestive": "NSFW",
             "explicit": "NSFW",
             "unknown": "Unknown",

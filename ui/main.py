@@ -12,12 +12,13 @@ from engine.cache import get_cache, source_cache_dir
 from engine.image_analyzer import build_record, discover_images
 from engine.models import ImageRecord, ImageStatus
 from engine.ranking import rank_records
+from engine.runtime_config import configure_vision_engine
 from engine.session import save_session
 from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
 from ui.image_detail import ImageDetailPanel
 from ui.image_grid import ImageGrid
-from ui.settings import SettingsPanel
+from ui.settings_extended import SettingsPanel
 from ui.styles import DARK_STYLESHEET
 from ui.workers import AnalysisWorker, GenerateMosaicWorker, ModelLoaderWorker, PostProcessWorker
 
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
 
         self._settings = load_settings()
         self._engine = get_vision_engine()
+        configure_vision_engine(self._engine, self._settings)
         self._cache = self._get_cache_for_source(self._settings.last_source_folder)
         self._pool = QThreadPool(self)
         self._pool.setMaxThreadCount(1)
@@ -91,6 +93,7 @@ class MainWindow(QMainWindow):
 
     def _settings_changed(self, settings) -> None:
         self._settings = settings
+        configure_vision_engine(self._engine, self._settings)
         if settings.last_source_folder:
             self._cache = self._get_cache_for_source(settings.last_source_folder)
         save_settings(settings)

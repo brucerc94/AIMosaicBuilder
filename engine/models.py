@@ -401,7 +401,8 @@ class AppSettings:
     model_path: str = ""
     mmproj_path: str = ""
     cache_directory: str = ""
-    n_ctx: int = 2048
+    n_ctx: int = 4096
+    max_tokens: int = 576
     n_gpu_layers: int = 0
     n_threads: int = 4
     n_threads_batch: int = 0
@@ -411,6 +412,8 @@ class AppSettings:
     canvas_width: int = 3840
     canvas_height: int = 2160
     padding_px: int = 40
+    min_subject_percent: float = 10.0
+    target_subject_percent: float = 15.0
     min_image_width: int = 200
     min_image_height: int = 200
     confidence_threshold: float = 0.5
@@ -429,6 +432,7 @@ class AppSettings:
             "mmproj_path": self.mmproj_path,
             "cache_directory": self.cache_directory,
             "n_ctx": self.n_ctx,
+            "max_tokens": self.max_tokens,
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,
             "n_threads_batch": self.n_threads_batch,
@@ -438,6 +442,8 @@ class AppSettings:
             "canvas_width": self.canvas_width,
             "canvas_height": self.canvas_height,
             "padding_px": self.padding_px,
+            "min_subject_percent": self.min_subject_percent,
+            "target_subject_percent": self.target_subject_percent,
             "min_image_width": self.min_image_width,
             "min_image_height": self.min_image_height,
             "confidence_threshold": self.confidence_threshold,
@@ -453,21 +459,40 @@ class AppSettings:
     @classmethod
     def from_dict(cls, d: dict) -> "AppSettings":
         weights_d = d.get("ranking_weights", {})
+        try:
+            n_ctx = int(d.get("n_ctx", 4096))
+        except (TypeError, ValueError):
+            n_ctx = 4096
+        try:
+            max_tokens = int(d.get("max_tokens", 576))
+        except (TypeError, ValueError):
+            max_tokens = 576
+        try:
+            min_subject_percent = float(d.get("min_subject_percent", 10.0))
+        except (TypeError, ValueError):
+            min_subject_percent = 10.0
+        try:
+            target_subject_percent = float(d.get("target_subject_percent", 15.0))
+        except (TypeError, ValueError):
+            target_subject_percent = 15.0
         return cls(
             last_source_folder=str(d.get("last_source_folder", "")),
             model_path=str(d.get("model_path", "")),
             mmproj_path=str(d.get("mmproj_path", "")),
             cache_directory=str(d.get("cache_directory", "")),
-            n_ctx=int(d.get("n_ctx", 2048)),
+            n_ctx=max(2048, n_ctx),
+            max_tokens=max(64, min(4096, max_tokens)),
             n_gpu_layers=int(d.get("n_gpu_layers", 0)),
             n_threads=int(d.get("n_threads", 4)),
             n_threads_batch=int(d.get("n_threads_batch", 0)),
             n_batch=int(d.get("n_batch", 512)),
             n_ubatch=int(d.get("n_ubatch", 512)),
-            target_images=int(d.get("target_images", 0)),
+            target_images=max(0, int(d.get("target_images", 0))),
             canvas_width=int(d.get("canvas_width", 3840)),
             canvas_height=int(d.get("canvas_height", 2160)),
             padding_px=int(d.get("padding_px", 40)),
+            min_subject_percent=max(1.0, min(50.0, min_subject_percent)),
+            target_subject_percent=max(max(1.0, min(50.0, min_subject_percent)), min(75.0, target_subject_percent)),
             min_image_width=int(d.get("min_image_width", 200)),
             min_image_height=int(d.get("min_image_height", 200)),
             confidence_threshold=float(d.get("confidence_threshold", 0.5)),

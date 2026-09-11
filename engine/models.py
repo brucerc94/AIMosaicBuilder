@@ -120,12 +120,13 @@ class ImageAnalysis:
     image_quality: float = 0.0
     subject_quality: float = 0.0
     mosaic_value: float = 0.0
+    user_request_score: float = 1.0
     visual_tags: dict[str, Any] = field(default_factory=dict)
     reject: bool = False
     reject_reason: str = ""
     notes: str = ""
     raw_response: str = ""
-    analysis_version: int = 2
+    analysis_version: int = 3
     model_used: str = ""
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
@@ -158,11 +159,19 @@ class ImageAnalysis:
         visual_tags = d.get("visual_tags", {})
         if not isinstance(visual_tags, dict):
             raise ValueError("visual_tags must be an object")
+        # Backward compatibility: older custom-request analyses stored this
+        # score inside visual_tags; new analyses keep it as a first-class field.
+        try:
+            user_request_score = float(d.get("user_request_score", visual_tags.get("user_request_score", 1.0)))
+        except (TypeError, ValueError):
+            user_request_score = 1.0
+        user_request_score = max(0.0, min(1.0, user_request_score))
         return cls(
             has_person=bool(d.get("has_person", False)),
             person_count=person_count,
             main_subject_is_person=bool(d.get("main_subject_is_person", False)),
             **values,
+            user_request_score=user_request_score,
             face_visible=bool(d.get("face_visible", False)),
             body_visible=bool(d.get("body_visible", False)),
             occluded=bool(d.get("occluded", False)),
@@ -171,7 +180,7 @@ class ImageAnalysis:
             reject_reason=str(d.get("reject_reason", "")),
             notes=str(d.get("notes", ""))[:1000],
             raw_response=str(d.get("raw_response", "")),
-            analysis_version=int(d.get("analysis_version", 2)),
+            analysis_version=int(d.get("analysis_version", 3)),
             model_used=str(d.get("model_used", "")),
             timestamp=str(d.get("timestamp", datetime.now().isoformat())),
         )

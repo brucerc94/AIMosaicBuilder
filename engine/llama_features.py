@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import inspect
 import logging
+import time
+from functools import wraps
 from pathlib import Path
 from typing import Optional
 
@@ -10,6 +12,95 @@ logger = logging.getLogger("llama_features")
 
 _init_params: Optional[set[str]] = None
 _chat_params: Optional[set[str]] = None
+_profile_hooks_installed = False
+
+
+def _install_profile_hooks() -> None:
+    """Install process-local timings around llama.cpp completion/generation.
+
+    AIMosaicBuilder uses a custom multimodal chat handler, so the application's
+    outer create_chat_completion() timer includes handler work that llama.cpp's
+    own perf summary does not expose clearly. These wrappers let us separate:
+    - Llama.create_completion() total time invoked by the handler
+    - Llama.generate() generation/decoder time
+    The wrappers are installed once per Python process and preserve signatures.
+    """
+    global _profile_hooks_installed
+    if _profile_hooks_installed:
+        return
+    try:
+        from llama_cpp import Llama
+    except Exception:
+        return
+
+    installed_any = False
+
+    original_create_completion = getattr(Llama, "create_completion", None)
+    if original_create_completion is not None and not getattr(original_create_completion, "_aimosaic_profile", False):
+        @wraps(original_create_completion)
+        def timed_create_completion(self, *args, **kwargs):
+            started = time.perf_counter()
+            try:
+                return original_create_completion(self, *args, **kwargs)
+            finally:
+                elapsed = time.perf_counter() - started
+                prompt = kwargs.get("prompt")
+                if prompt is None and args:
+                    prompt = args[0]
+                if isinstance(prompt, (list, tuple)):
+                    prompt_kind = "tokens"
+                    prompt_len = len(prompt)
+                elif isinstance(prompt, str):
+                    prompt_kind = "text"
+                    prompt_len = len(prompt)
+                else:
+                    prompt_kind = type(prompt).__name__
+                    prompt_len = -1
+                logger.info(
+                    "[vision-profile] Llama.create_completion | elapsed=%.3fs | "
+                    "prompt_kind=%s | prompt_len=%d | max_tokens=%s | stream=%s",
+                    elapsed,
+                    prompt_kind,
+                    prompt_len,
+                    kwargs.get("max_tokens", "?"),
+                    kwargs.get("stream", False),
+                )
+
+        timed_create_completion._aimosaic_profile = True
+        Llama.create_completion = timed_create_completion
+        installed_any = True
+
+    original_generate = getattr(Llama, "generate", None)
+    if original_generate is not None and not getattr(original_generate, "_aimosaic_profile", False):
+        @wraps(original_generate)
+        def timed_generate(self, *args, **kwargs):
+            started = time.perf_counter()
+            yielded = 0
+            iterator = None
+            try:
+                iterator = original_generate(self, *args, **kwargs)
+                for item in iterator:
+                    yielded += 1
+                    yield item
+            finally:
+                elapsed = time.perf_counter() - started
+                logger.info(
+                    "[vision-profile] Llama.generate | elapsed=%.3fs | yielded=%d | "
+                    "max_tokens=%s | temp=%s | top_k=%s",
+                    elapsed,
+                    yielded,
+                    kwargs.get("max_tokens", "?"),
+                    kwargs.get("temp", "?"),
+                    kwargs.get("top_k", "?"),
+                )
+
+        timed_generate._aimosaic_profile = True
+        Llama.generate = timed_generate
+        installed_any = True
+
+    _profile_hooks_installed = installed_any
+    if installed_any:
+        logger.info("[vision-profile] llama.cpp completion/generation profiling hooks installed")
 
 
 def _get_init_params() -> set[str]:
@@ -94,6 +185,7 @@ def _find_model_handler(model_path: str) -> tuple[str, str]:
 
 
 def detect_vision_capabilities(model_path: str = "") -> dict:
+    _install_profile_hooks()
     caps = {
         "llama_cpp_available": False,
         "version": "unknown",

@@ -12,13 +12,14 @@ Right-side panel showing:
 
 from __future__ import annotations
 
+import io
 import logging
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QSize, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
-    QFrame, QGroupBox, QHBoxLayout, QLabel, QPushButton, QScrollArea,
+    QFrame, QGroupBox, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea,
     QSizePolicy, QSpinBox, QVBoxLayout, QWidget,
 )
 
@@ -122,35 +123,58 @@ class ImageDetailPanel(QWidget):
         layout.addWidget(preview_grp)
 
         scores_grp = QGroupBox("Scores")
-        scores_form = QVBoxLayout(scores_grp)
+        scores_grid = QGridLayout(scores_grp)
+        scores_grid.setContentsMargins(8, 8, 8, 8)
+        scores_grid.setHorizontalSpacing(18)
+        scores_grid.setVerticalSpacing(4)
 
         def score_row(label: str) -> tuple[QLabel, QLabel]:
             row = QHBoxLayout()
+            row.setContentsMargins(0, 0, 0, 0)
             lbl = QLabel(label)
             lbl.setStyleSheet("color: #7f849c; font-size: 11px;")
-            lbl.setMinimumWidth(125)
+            lbl.setMinimumWidth(105)
             val = QLabel("—")
             val.setStyleSheet("color: #cdd6f4; font-size: 11px; font-weight: bold;")
             row.addWidget(lbl)
             row.addWidget(val)
             row.addStretch()
-            scores_form.addLayout(row)
-            return lbl, val
+            holder = QWidget()
+            holder.setLayout(row)
+            return lbl, val, holder
 
-        _, self._lbl_score = score_row("Final Score:")
-        _, self._lbl_rank = score_row("Rank:")
-        _, self._lbl_quality = score_row("Image Quality:")
-        _, self._lbl_subject_quality = score_row("Subject Quality:")
-        _, self._lbl_person_vis = score_row("Person Visibility:")
-        _, self._lbl_composition = score_row("Composition:")
-        _, self._lbl_sharpness = score_row("Sharpness:")
-        _, self._lbl_blur = score_row("Blur:")
-        _, self._lbl_person_cnt = score_row("Persons:")
-        _, self._lbl_face = score_row("Face Visible:")
-        _, self._lbl_body = score_row("Body Visible:")
-        _, self._lbl_mosaic = score_row("Mosaic Value:")
-        _, self._lbl_user_request = score_row("User Request:")
-        _, self._lbl_status = score_row("Status:")
+        score_widgets = []
+        for label in (
+            "Final Score:", "Rank:", "Image Quality:", "Subject Quality:",
+            "Person Visibility:", "Composition:", "Sharpness:", "Blur:",
+            "Persons:", "Face Visible:", "Body Visible:", "Mosaic Value:",
+            "User Request:", "Status:",
+        ):
+            score_widgets.append((label, *score_row(label)))
+
+        score_attrs = {
+            "Final Score:": "_lbl_score",
+            "Rank:": "_lbl_rank",
+            "Image Quality:": "_lbl_quality",
+            "Subject Quality:": "_lbl_subject_quality",
+            "Person Visibility:": "_lbl_person_vis",
+            "Composition:": "_lbl_composition",
+            "Sharpness:": "_lbl_sharpness",
+            "Blur:": "_lbl_blur",
+            "Persons:": "_lbl_person_cnt",
+            "Face Visible:": "_lbl_face",
+            "Body Visible:": "_lbl_body",
+            "Mosaic Value:": "_lbl_mosaic",
+            "User Request:": "_lbl_user_request",
+            "Status:": "_lbl_status",
+        }
+        for index, (label, lbl, val, holder) in enumerate(score_widgets):
+            row = index // 2
+            col = index % 2
+            scores_grid.addWidget(holder, row, col)
+            setattr(self, score_attrs[label], val)
+        scores_grid.setColumnStretch(0, 1)
+        scores_grid.setColumnStretch(1, 1)
         layout.addWidget(scores_grp)
 
         tags_grp = QGroupBox("Detected Attributes")
@@ -302,6 +326,7 @@ class ImageDetailPanel(QWidget):
         try:
             if not record.detections:
                 self._crop_label.setText("No person detected")
+                self._crop_label.setPixmap(QPixmap())
                 return
             main = next((d for d in record.detections if d.is_main), record.detections[0])
             from vision.cropper import crop_image
@@ -309,20 +334,33 @@ class ImageDetailPanel(QWidget):
                 record.path,
                 main.bbox,
                 padding_px=self._padding_spin.value(),
-                output_size=_CROP_PREVIEW_SIZE,
+                output_size=None,
             )
             if cropped is None:
                 self._crop_label.setText("Crop error")
+                self._crop_label.setPixmap(QPixmap())
                 return
-            import io
+
             buf = io.BytesIO()
             cropped.save(buf, format="PNG")
             image = QImage()
-            image.loadFromData(buf.getvalue())
-            self._crop_label.setPixmap(QPixmap.fromImage(image))
+            if not image.loadFromData(buf.getvalue()):
+                self._crop_label.setText("Crop error")
+                self._crop_label.setPixmap(QPixmap())
+                return
+
+            pixmap = QPixmap.fromImage(image)
+            scaled = pixmap.scaled(
+                QSize(*_CROP_PREVIEW_SIZE),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self._crop_label.setText("")
+            self._crop_label.setPixmap(scaled)
         except Exception as e:
             logger.debug(f"[detail] Crop preview error: {e}")
             self._crop_label.setText("—")
+            self._crop_label.setPixmap(QPixmap())
 
     def _update_notes(self, record: ImageRecord) -> None:
         if record.analysis and record.analysis.notes:

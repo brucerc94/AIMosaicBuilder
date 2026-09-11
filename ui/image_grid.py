@@ -18,29 +18,16 @@ from __future__ import annotations
 import logging
 from typing import Optional
 
-from PySide6.QtCore import (
-    QSize,
-    Qt,
-    Signal,
-    QThreadPool,
-)
-from PySide6.QtGui import (
-    QColor,
-    QFont,
-    QImage,
-    QPixmap,
-)
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QColor, QImage, QPixmap
 from PySide6.QtWidgets import (
-    QAbstractScrollArea,
-    QCheckBox,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QLabel,
     QMenu,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
-    QHBoxLayout,
     QWidget,
 )
 
@@ -52,9 +39,7 @@ logger = logging.getLogger("ui.image_grid")
 _CARD_W = 190
 _CARD_H = 230
 _THUMB_SIZE = (170, 150)
-_COLUMNS = 4
 
-# Status badge colours
 _BADGE_COLORS = {
     ImageStatus.SELECTED:    ("#a6e3a1", "#1e1e2e"),
     ImageStatus.REJECTED:    ("#f38ba8", "#1e1e2e"),
@@ -87,14 +72,12 @@ def _pixmap_from_bytes(data: bytes) -> Optional[QPixmap]:
     return None
 
 
-# ─── ImageCard ────────────────────────────────────────────────────────────────
-
 class ImageCard(QFrame):
     """Single image card in the grid."""
 
-    clicked         = Signal(object)   # ImageRecord
-    include_toggled = Signal(object)   # ImageRecord
-    exclude_toggled = Signal(object)   # ImageRecord
+    clicked = Signal(object)
+    include_toggled = Signal(object)
+    exclude_toggled = Signal(object)
 
     def __init__(self, record: ImageRecord, parent: QWidget = None) -> None:
         super().__init__(parent)
@@ -112,7 +95,6 @@ class ImageCard(QFrame):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(3)
 
-        # Thumbnail
         self._thumb_label = QLabel()
         self._thumb_label.setFixedSize(*_THUMB_SIZE)
         self._thumb_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -120,14 +102,12 @@ class ImageCard(QFrame):
         self._thumb_label.setScaledContents(False)
         layout.addWidget(self._thumb_label)
 
-        # Filename
         self._name_label = QLabel()
         self._name_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._name_label.setWordWrap(False)
         self._name_label.setStyleSheet("font-size: 10px; color: #7f849c;")
         layout.addWidget(self._name_label)
 
-        # Score + rank row
         score_row = QHBoxLayout()
         score_row.setSpacing(4)
         self._score_label = QLabel("—")
@@ -139,12 +119,10 @@ class ImageCard(QFrame):
         score_row.addWidget(self._rank_label)
         layout.addLayout(score_row)
 
-        # Status badge
         self._badge_label = QLabel("PENDING")
         self._badge_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._badge_label.setStyleSheet(
-            "font-size: 9px; font-weight: bold; "
-            "border-radius: 3px; padding: 2px 6px;"
+            "font-size: 9px; font-weight: bold; border-radius: 3px; padding: 2px 6px;"
         )
         layout.addWidget(self._badge_label)
 
@@ -162,26 +140,22 @@ class ImageCard(QFrame):
     def update_from_record(self, record: ImageRecord) -> None:
         self._record = record
 
-        # Filename (truncated)
         name = record.filename
         if len(name) > 22:
             name = name[:10] + "…" + name[-10:]
         self._name_label.setText(name)
         self._name_label.setToolTip(record.filename)
 
-        # Score
         if record.ranking and record.ranking.final_score > 0:
             self._score_label.setText(f"{record.ranking.final_score:.0f}")
         else:
             self._score_label.setText("—")
 
-        # Rank
         if record.ranking and record.ranking.rank > 0:
             self._rank_label.setText(f"#{record.ranking.rank}")
         else:
             self._rank_label.setText("")
 
-        # Badge
         status = record.status
         colors = _BADGE_COLORS.get(status, ("#313244", "#cdd6f4"))
         badge_text = status.value.upper()
@@ -194,28 +168,22 @@ class ImageCard(QFrame):
 
         self._badge_label.setText(badge_text)
         self._badge_label.setStyleSheet(
-            f"font-size: 9px; font-weight: bold; "
-            f"border-radius: 3px; padding: 2px 6px; "
+            f"font-size: 9px; font-weight: bold; border-radius: 3px; padding: 2px 6px; "
             f"background-color: {colors[0]}; color: {colors[1]};"
         )
 
-        # Border highlight
         if status == ImageStatus.SELECTED or record.manually_included:
-            self.setStyleSheet(
-                "QFrame#image_card { border: 2px solid #a6e3a1; border-radius: 8px; background-color: #181825; }"
-            )
+            border = "#a6e3a1"
         elif status == ImageStatus.REJECTED or record.manually_excluded:
-            self.setStyleSheet(
-                "QFrame#image_card { border: 2px solid #f38ba8; border-radius: 8px; background-color: #181825; opacity: 0.7; }"
-            )
+            border = "#f38ba8"
         elif status == ImageStatus.ANALYZING:
-            self.setStyleSheet(
-                "QFrame#image_card { border: 2px solid #fab387; border-radius: 8px; background-color: #181825; }"
-            )
+            border = "#fab387"
         else:
-            self.setStyleSheet(
-                "QFrame#image_card { border: 2px solid #313244; border-radius: 8px; background-color: #181825; }"
-            )
+            border = "#313244"
+
+        self.setStyleSheet(
+            f"QFrame#image_card {{ border: 2px solid {border}; border-radius: 8px; background-color: #181825; }}"
+        )
 
     def mousePressEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
@@ -249,32 +217,26 @@ class ImageCard(QFrame):
         return self._record
 
 
-# ─── ImageGrid ───────────────────────────────────────────────────────────────
-
 class ImageGrid(QScrollArea):
-    """
-    Scrollable grid of ImageCards.
-    Manages lazy thumbnail loading via ThumbnailPool.
-    """
+    """Scrollable grid of ImageCards with lazy thumbnail loading."""
 
-    image_selected      = Signal(object)   # ImageRecord
-    include_toggled     = Signal(object)   # ImageRecord
-    exclude_toggled     = Signal(object)   # ImageRecord
+    image_selected = Signal(object)
+    include_toggled = Signal(object)
+    exclude_toggled = Signal(object)
 
     def __init__(self, parent: QWidget = None) -> None:
         super().__init__(parent)
         self._records: list[ImageRecord] = []
-        self._cards: dict[str, ImageCard] = {}   # path → card
+        self._cards: dict[str, ImageCard] = {}
         self._sort_order = SortOrder.SCORE
         self._last_columns = -1
-        self._rebuilding = False
+        self._layouting = False
         self._thumbnail_pending: set[str] = set()
         self._thumbnail_loaded: set[str] = set()
         self._thumb_pool = ThumbnailPool(
             on_done=self._on_thumbnail_done,
             max_threads=4,
         )
-
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -290,101 +252,121 @@ class ImageGrid(QScrollArea):
         self._grid.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.setWidget(self._container)
 
-    # ── Public API ─────────────────────────────────────────────────────────
-
     def set_sort_order(self, order: SortOrder) -> None:
         self._sort_order = order
-        self._refresh_layout()
+        self._relayout_cards()
 
     def load_records(self, records: list[ImageRecord]) -> None:
-        """Replace all records and rebuild the grid."""
-        self._records = records
-        self._rebuild_grid()
+        """Replace records while reusing existing cards and thumbnails."""
+        self._records = list(records)
+        current_paths = {record.path for record in self._records}
+
+        # Remove obsolete cards without disturbing cards that can be reused.
+        for path, card in list(self._cards.items()):
+            if path in current_paths:
+                continue
+            self._grid.removeWidget(card)
+            card.deleteLater()
+            self._cards.pop(path, None)
+            self._thumbnail_pending.discard(path)
+            self._thumbnail_loaded.discard(path)
+
+        # Create only cards that do not already exist.
+        for record in self._records:
+            card = self._cards.get(record.path)
+            if card is None:
+                card = self._create_card(record)
+                self._cards[record.path] = card
+                self._request_thumbnail(record.path)
+            else:
+                card.update_from_record(record)
+
+        self._relayout_cards()
 
     def update_record(self, record: ImageRecord) -> None:
-        """Update a single card in place (e.g. after analysis completes)."""
+        """Update a single existing card in place."""
         card = self._cards.get(record.path)
         if card:
             card.update_from_record(record)
             self._request_thumbnail(record.path)
-        else:
-            # New card — add it
-            self._records.append(record)
-            self._add_card(record, len(self._cards))
-            self._request_thumbnail(record.path)
+            return
+
+        self._records.append(record)
+        card = self._create_card(record)
+        self._cards[record.path] = card
+        self._request_thumbnail(record.path)
+        self._relayout_cards()
 
     def upsert_record(self, record: ImageRecord) -> None:
-        """Insert or update a record."""
-        for i, r in enumerate(self._records):
-            if r.path == record.path:
+        for i, current in enumerate(self._records):
+            if current.path == record.path:
                 self._records[i] = record
                 self.update_record(record)
                 return
         self._records.append(record)
-        self._add_card(record, len(self._cards))
+        card = self._create_card(record)
+        self._cards[record.path] = card
         self._request_thumbnail(record.path)
+        self._relayout_cards()
 
     def clear(self) -> None:
         self._records.clear()
+        for card in self._cards.values():
+            card.deleteLater()
         self._cards.clear()
         self._thumbnail_pending.clear()
         self._thumbnail_loaded.clear()
-        self._rebuild_grid()
+        self._clear_layout_items()
+        self._last_columns = -1
 
     def get_selected_records(self) -> list[ImageRecord]:
         return [r for r in self._records if r.status == ImageStatus.SELECTED]
-
-    # ── Internal grid management ───────────────────────────────────────────
 
     def _sorted_records(self) -> list[ImageRecord]:
         key_fn = {
             SortOrder.SCORE:    lambda r: -(r.ranking.final_score if r.ranking else 0),
             SortOrder.RANK:     lambda r: r.ranking.rank if (r.ranking and r.ranking.rank > 0) else 9999,
             SortOrder.FILENAME: lambda r: r.filename.lower(),
-            SortOrder.DATE:     lambda r: r.filename.lower(),  # fallback: name
+            SortOrder.DATE:     lambda r: r.filename.lower(),
         }.get(self._sort_order, lambda r: r.filename.lower())
-
         return sorted(self._records, key=key_fn)
 
-    def _rebuild_grid(self) -> None:
-        if self._rebuilding:
-            return
+    def _clear_layout_items(self) -> None:
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            # Do not delete the widget here; callers own its lifetime.
 
-        self._rebuilding = True
-        try:
-            while self._grid.count():
-                item = self._grid.takeAt(0)
-                if item.widget():
-                    item.widget().deleteLater()
-            self._cards.clear()
-
-            sorted_recs = self._sorted_records()
-            for idx, record in enumerate(sorted_recs):
-                self._add_card(record, idx)
-                self._request_thumbnail(record.path)
-        finally:
-            self._rebuilding = False
-
-    def _refresh_layout(self) -> None:
-        """Re-sort without allowing recursive rebuilds."""
-        self._last_columns = -1
-        self._rebuild_grid()
-
-    def _column_count(self) -> int:
-        available_width = max(1, self.viewport().width())
-        return max(1, available_width // (_CARD_W + 8))
-
-    def _add_card(self, record: ImageRecord, idx: int) -> None:
+    def _create_card(self, record: ImageRecord) -> ImageCard:
         card = ImageCard(record, self._container)
         card.clicked.connect(self.image_selected.emit)
         card.include_toggled.connect(self.include_toggled.emit)
         card.exclude_toggled.connect(self.exclude_toggled.emit)
+        return card
 
-        cols = max(1, self._last_columns if self._last_columns > 0 else self._column_count())
-        row = idx // cols
-        col = idx % cols
-        self._grid.addWidget(card, row, col)
-        self._cards[record.path] = card
+    def _relayout_cards(self) -> None:
+        if self._layouting:
+            return
+
+        self._layouting = True
+        try:
+            self._clear_layout_items()
+            sorted_records = self._sorted_records()
+            cols = max(1, self._column_count())
+            self._last_columns = cols
+
+            for idx, record in enumerate(sorted_records):
+                card = self._cards.get(record.path)
+                if card is None:
+                    continue
+                row = idx // cols
+                col = idx % cols
+                self._grid.addWidget(card, row, col)
+        finally:
+            self._layouting = False
+
+    def _column_count(self) -> int:
+        available_width = max(1, self.viewport().width())
+        return max(1, available_width // (_CARD_W + 8))
 
     def _request_thumbnail(self, path: str) -> None:
         if not path or path in self._thumbnail_pending or path in self._thumbnail_loaded:
@@ -402,12 +384,10 @@ class ImageGrid(QScrollArea):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        if self._rebuilding:
+        if self._layouting:
             return
 
         columns = self._column_count()
         if columns == self._last_columns:
             return
-
-        self._last_columns = columns
-        self._rebuild_grid()
+        self._relayout_cards()

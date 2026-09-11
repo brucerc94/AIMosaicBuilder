@@ -28,7 +28,8 @@ except ImportError:
 
 _SYSTEM_PROMPT = """You are a photo evaluator for a portrait mosaic.
 Analyze the supplied photograph and return ONLY one valid JSON object.
-Do not explain anything. Use unknown for uncertain visual attributes."""
+Do not explain anything. Use unknown for uncertain visual attributes.
+Include a concise human-readable note in the \"notes\" field summarizing the most useful visual observation for mosaic selection."""
 
 _USER_PROMPT = """Analyze this photo for a portrait mosaic. Return ONLY JSON.
 Required fields:
@@ -54,9 +55,11 @@ Required fields:
     "looking_at_camera": boolean
   },
   "reject": boolean,
-  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty"
+  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty",
+  "notes": string
 }
 Be conservative. gender_presentation is visual presentation only.
+For "notes", write one concise sentence (preferably under 25 words) describing the most useful visual fact about the person/photo for mosaic selection, such as framing, pose, visibility, composition, quality, or notable limitations.
 """
 
 
@@ -351,7 +354,6 @@ class VisionLLMEngine:
                 "verbose": True,
                 **extra,
             }
-            # Log every effective kwarg so we can verify parity with AIStoryWriter
             logger.info(
                 "[vision] EFFECTIVE LLAMA KWARGS: n_ctx=%d n_gpu_layers=%d n_threads=%d "
                 "n_threads_batch=%s n_batch=%s n_ubatch=%s flash_attn=%s "
@@ -407,7 +409,7 @@ class VisionLLMEngine:
             self._unload()
             self._capabilities = None
 
-    def analyze_image(self, image_path: str, max_tokens: int = 192, temperature: float = 0.0) -> ImageAnalysis:
+    def analyze_image(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0) -> ImageAnalysis:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
         image_name = Path(image_path).name
@@ -463,9 +465,6 @@ class VisionLLMEngine:
         prompt_tokens = usage.get("prompt_tokens", 0)
         completion_tokens = usage.get("completion_tokens", 0)
 
-        # Compute effective tokens/s for the generation phase.
-        # Approximate: assume visual encode ~1.8s, rest is prompt_eval + generation.
-        # We report tok/s over the full model_call for comparison with AIStoryWriter logs.
         total_tokens = (prompt_tokens or 0) + (completion_tokens or 0)
         gen_tps = (completion_tokens / inference_elapsed) if (completion_tokens and inference_elapsed > 0) else 0.0
         total_tps = (total_tokens / inference_elapsed) if (total_tokens and inference_elapsed > 0) else 0.0
@@ -479,7 +478,7 @@ class VisionLLMEngine:
         )
         return analysis
 
-    def analyze_image_raw(self, image_path: str, max_tokens: int = 192, temperature: float = 0.0):
+    def analyze_image_raw(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0):
         analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature)
         return analysis.raw_response, analysis
 

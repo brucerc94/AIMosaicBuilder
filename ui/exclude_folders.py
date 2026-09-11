@@ -102,6 +102,7 @@ class ExcludeFoldersDialog(QDialog):
         self._updating = True
         try:
             self._tree.clear()
+            self._items_by_path.clear()
             roots: dict[str, QTreeWidgetItem] = {}
             for relative, _path in directories:
                 parts = relative.split("/")
@@ -110,18 +111,23 @@ class ExcludeFoldersDialog(QDialog):
                 for part in parts:
                     accumulated.append(part)
                     key = "/".join(accumulated)
-                    item = self._items_by_path.get(key) if parent_item is None else None
+                    item = self._items_by_path.get(key)
                     if item is None:
                         if parent_item is None:
                             item = roots.get(key)
                         else:
-                            # Find an existing child under this parent.
                             item = next(
-                                (parent_item.child(i) for i in range(parent_item.childCount()) if parent_item.child(i).text(0) == part),
+                                (
+                                    parent_item.child(i)
+                                    for i in range(parent_item.childCount())
+                                    if parent_item.child(i).text(0) == part
+                                ),
                                 None,
                             )
                         if item is None:
-                            item = QTreeWidgetItem(parent_item if parent_item is not None else self._tree)
+                            item = QTreeWidgetItem(
+                                parent_item if parent_item is not None else self._tree
+                            )
                             item.setText(0, part)
                             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                             item.setCheckState(0, Qt.CheckState.Unchecked)
@@ -130,7 +136,6 @@ class ExcludeFoldersDialog(QDialog):
                         roots[key] = item
                     parent_item = item
 
-            # Apply saved exclusions. A checked parent automatically checks all descendants.
             for relative in sorted(self._excluded, key=lambda value: (value.count("/"), value)):
                 item = self._items_by_path.get(relative)
                 if item is not None:
@@ -138,6 +143,11 @@ class ExcludeFoldersDialog(QDialog):
         finally:
             self._updating = False
         self._tree.expandAll()
+
+    def _set_item_tree_state(self, item: QTreeWidgetItem, state: Qt.CheckState) -> None:
+        item.setCheckState(0, state)
+        for index in range(item.childCount()):
+            self._set_item_tree_state(item.child(index), state)
 
     def _on_item_changed(self, item: QTreeWidgetItem, _column: int) -> None:
         if self._updating:
@@ -148,7 +158,7 @@ class ExcludeFoldersDialog(QDialog):
         self._updating = True
         try:
             for index in range(item.childCount()):
-                item.child(index).setCheckState(0, state)
+                self._set_item_tree_state(item.child(index), state)
         finally:
             self._updating = False
 
@@ -156,14 +166,17 @@ class ExcludeFoldersDialog(QDialog):
         self._updating = True
         try:
             for index in range(self._tree.topLevelItemCount()):
-                self._tree.topLevelItem(index).setCheckState(0, state)
+                self._set_item_tree_state(self._tree.topLevelItem(index), state)
         finally:
             self._updating = False
 
     def excluded_folders(self) -> list[str]:
         """Return the smallest set of checked folders (parents replace checked children)."""
         result: list[str] = []
-        for relative, item in sorted(self._items_by_path.items(), key=lambda pair: (pair[0].count("/"), pair[0])):
+        for relative, item in sorted(
+            self._items_by_path.items(),
+            key=lambda pair: (pair[0].count("/"), pair[0]),
+        ):
             if item.checkState(0) != Qt.CheckState.Checked:
                 continue
             if any(relative == parent or relative.startswith(parent + "/") for parent in result):

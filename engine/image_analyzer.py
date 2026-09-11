@@ -7,7 +7,7 @@ Responsibilities:
   3. Check cache — skip already-analysed images
   4. Queue remaining images for LLM analysis (one at a time)
   5. Compute perceptual hash for similarity detection
-  6. Store results via cache
+  6. Store successful results via cache
 
 The actual LLM call is delegated to engine.vision_llm.VisionLLMEngine.
 This module is called from background workers — never from the UI thread.
@@ -20,7 +20,7 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Optional
 
 from engine.cache import AnalysisCache, compute_file_hash
 from engine.models import (
@@ -282,6 +282,7 @@ class AnalysisPipeline:
             self._emit_progress(idx + 1, total, record)
 
             t_start = time.perf_counter()
+            analysis_failed = False
             try:
                 analysis = self._engine.analyze_image(
                     path,
@@ -291,6 +292,7 @@ class AnalysisPipeline:
             except Exception as e:
                 logger.error(f"[analyzer] LLM error for {path}: {e}")
                 analysis = ImageAnalysis.error_result(str(e), model_name)
+                analysis_failed = True
                 self._n_errors += 1
 
             elapsed = time.perf_counter() - t_start
@@ -298,9 +300,15 @@ class AnalysisPipeline:
             logger.debug(f"[analyzer] Analysed in {elapsed:.1f}s: {Path(path).name}")
 
             record.analysis = analysis
-            record.status = ImageStatus.ANALYZED if not analysis.reject else ImageStatus.REJECTED
-            if analysis.has_person:
-                self._n_people += 1
+            if analysis_failed or analysis.reject_reason == RejectReason.LLM_ERROR.value:
+                # A runtime/model failure is an ERROR, not a real content rejection.
+                # This distinction keeps failures out of the normal rejected pool.
+                record.status = ImageStatus.ERROR
+                record.error_message = analysis.notes or "Vision analysis failed."
+            else:
+                record.status = ImageStatus.ANALYZED if not analysis.reject else ImageStatus.REJECTED
+                if analysis.has_person:
+                    self._n_people += 1
 
             phash_started = time.perf_counter()
             record.phash = compute_phash(path)
@@ -313,8 +321,9 @@ class AnalysisPipeline:
 
             total_elapsed = time.perf_counter() - image_started
             logger.info(
-                "[analyzer] ANALYZED | %d/%d | image=%s | inference=%.2fs | phash=%.3fs | cache_write=%.3fs | total=%.2fs",
+                "[analyzer] ANALYZED | %d/%d | image=%s | inference=%.2fs | phash=%.3fs | cache_write=%.3fs | total=%.2fs | status=%s",
                 idx + 1, total, Path(path).name, elapsed, phash_elapsed, cache_write_elapsed, total_elapsed,
+                record.status.value.upper(),
             )
 
             results.append(record)

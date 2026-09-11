@@ -1,118 +1,101 @@
 # AI Mosaic Builder
 
-AI Mosaic Builder es una aplicación de escritorio local para analizar grandes colecciones de fotografías, encontrar imágenes con personas, puntuarlas, reducir repeticiones y preparar una selección para un mosaico.
+AI Mosaic Builder is a local desktop application for analyzing large photo collections, finding useful portrait images, ranking them, enforcing user-defined requirements, reducing visual repetition, and generating an optimized mosaic project.
 
-La aplicación está construida con Python + PySide6 y utiliza un modelo multimodal local mediante `llama-cpp-python` para el análisis visual.
+The application is built with **Python + PySide6** and uses a local multimodal GGUF model through **llama-cpp-python** for image analysis.
 
-## ¿Qué hace?
+The project is designed around one principle: **analysis, selection, layout, preview, and export are separate stages**. This keeps long-running inference out of the UI thread and allows the mosaic layout to be recalculated whenever the user changes the selection rules.
 
-El flujo principal es:
+## Workflow
 
-```text
-Carpeta de fotografías
-        ↓
-Descubrimiento de imágenes
-        ↓
-Prefiltrado rápido
-        ↓
-SHA-256 / cache local
-        ↓
-Modelo multimodal
-(Gemma-4 u otro modelo compatible)
-        ↓
-Análisis visual
-        ↓
-Detección de personas
-        ↓
-Ranking
-        ↓
-Aplicación de requisitos del usuario
-        ↓
-Diversidad / eliminación de similares
-        ↓
-Selección + optimización de layout
-        ↓
-Crop dinámico definido por coordenadas + zoom
-        ↓
-mosaic.json
-```
-
-El objetivo no es simplemente encontrar todas las fotos que contienen una persona, sino seleccionar las fotografías más útiles para un mosaico: buena calidad, buena composición, buena visibilidad del sujeto, variedad y cumplimiento de la receta solicitada por el usuario.
-
-## Arquitectura
-
-El proyecto está dividido por responsabilidades:
+The current workflow is:
 
 ```text
-AI-Mosaic-Builder/
-│
-├── main.py
-├── requirements.txt
-│
-├── engine/
-│   ├── vision_llm.py       # Motor multimodal local
-│   ├── llama_features.py   # Detección de capacidades llama.cpp
-│   ├── image_analyzer.py   # Descubrimiento y pipeline de análisis
-│   ├── ranking.py          # Puntuación, requisitos y selección
-│   ├── layout_optimizer.py # Cantidad AUTO, zoom y packing
-│   ├── cache.py            # Cache por SHA-256
-│   ├── models.py           # Dataclasses y modelos de datos
-│   ├── session.py          # Persistencia de sesiones
-│   └── storage.py          # Settings
-│
-├── vision/
-│   ├── person_detector.py  # Detección de personas
-│   ├── cropper.py          # Cálculo del crop
-│   └── similarity.py       # Similitud / diversidad
-│
-├── ui/
-│   ├── main.py
-│   ├── settings.py
-│   ├── image_grid.py
-│   ├── image_detail.py
-│   ├── workers.py
-│   └── styles.py
-│
-└── engine/project_export.py # Exportación del proyecto
+Open Folder
+      ↓
+Discover images
+      ↓
+Load per-folder cache (if available)
+      ↓
+Show images immediately in the UI
+      ↓
+Analyze
+      ↓
+Load vision model once
+      ↓
+Analyze uncached images sequentially
+      ↓
+Detect people / bounding boxes
+      ↓
+Calculate ranking
+      ↓
+Apply hard requirements + soft preferences
+      ↓
+Generate Mosaic
+      ↓
+Recalculate selection + layout from current user choices
+      ↓
+Optimize crop + zoom + packing
+      ↓
+Preview
+      ↓
+Export JSON or Export Mosaic image
 ```
 
-## Análisis con llama.cpp
+`Open Folder` intentionally does **not** load Gemma and does not run inference. It only discovers the images and restores compatible cached analysis so the collection is visible immediately. The expensive model work starts when the user presses **Analyze**.
 
-El motor utiliza `llama-cpp-python` para cargar el modelo GGUF localmente.
+## Main Features
 
-Para un modelo multimodal se utilizan dos archivos:
+### Local multimodal analysis
+
+The vision engine loads a local GGUF model and an associated multimodal projector. The repository is prepared for Gemma-4 and dynamically checks the installed `llama-cpp-python` capabilities before selecting the multimodal mechanism.
+
+For Gemma-4, the application uses `Gemma4ChatHandler` when it is available.
+
+The analysis prompt is no longer hardcoded inside Python. It lives in:
 
 ```text
-Modelo principal:
-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-Q4_K_M.gguf
-
-Vision projector:
-mmproj-Gemma-4-E4B-Uncensored-HauhauCS-Aggressive-f16.gguf
+prompts/image_analysis.txt
 ```
 
-La aplicación detecta la familia del modelo y evita seleccionar un handler multimodal incorrecto. Para Gemma-4 utiliza `Gemma4ChatHandler` cuando está disponible en la instalación.
+The file contains separate `[SYSTEM]` and `[USER]` sections, making the prompt directly editable and version-controlled.
 
-La integración intenta adaptarse a las capacidades reales de la versión instalada de `llama-cpp-python`, en lugar de asumir que todos los parámetros multimodales existen.
+### Structured image analysis
 
-## Qué analiza el modelo
+Each analyzed image can contain:
 
-Cada fotografía puede producir un análisis estructurado con información como:
+```json
+{
+  "has_person": true,
+  "person_count": 1,
+  "main_subject_is_person": true,
+  "person_visibility": 0.95,
+  "face_visible": true,
+  "body_visible": true,
+  "occluded": false,
+  "blur": 0.05,
+  "composition": 0.90,
+  "image_quality": 0.92,
+  "subject_quality": 0.94,
+  "mosaic_value": 0.91,
+  "user_request_score": 0.88,
+  "visual_tags": {
+    "framing": "full_body",
+    "orientation": "front",
+    "gender_presentation": "unknown",
+    "content_rating": "safe",
+    "pose": "walking",
+    "looking_at_camera": true
+  },
+  "reject": false,
+  "reject_reason": "",
+  "notes": "Full-body subject, sharp image, clear separation from the background."
+}
+```
 
-- existencia de personas;
-- cantidad de personas;
-- persona principal;
-- visibilidad del sujeto;
-- rostro visible;
-- cuerpo visible;
-- oclusión;
-- desenfoque;
-- composición;
-- calidad técnica;
-- calidad del sujeto;
-- valor para el mosaico;
-- motivo de descarte.
+The model is instructed to use `unknown` whenever an attribute cannot be determined reliably.
 
-Además, el análisis multimodal clasifica atributos visuales usados por la receta del mosaico:
+Supported visual attributes include:
 
 ```text
 framing:
@@ -125,7 +108,7 @@ gender_presentation:
   male | female | unknown
 
 content_rating:
-  safe | suggestive | explicit | unknown
+  safe | nsfw | unknown
 
 pose:
   standing | seated | lying | walking | other | unknown
@@ -134,277 +117,249 @@ looking_at_camera:
   true | false
 ```
 
-Cuando un atributo no puede determinarse de forma razonable se utiliza `unknown`.
+`content_rating` is now normalized around the application-level concepts **SFW** and **NSFW**. Older cached values such as `suggestive` or `explicit` are accepted for backwards compatibility and normalized internally.
 
-Los resultados se convierten en una estructura validable antes de continuar con las siguientes etapas.
+### Custom Prompt scoring
 
-## Mosaic Requirements
+The **Filters** tab includes an optional `Custom Prompt` field.
 
-El usuario puede definir una receta para indicar cómo quiere que quede compuesto el mosaico.
-
-Los requisitos obligatorios se aplican durante la selección, no son solamente controles visuales de la interfaz.
-
-### Cantidades mínimas
-
-Se pueden pedir cantidades mínimas de:
-
-- `Face only`;
-- `Full body`;
-- `Front`;
-- `Side`;
-- `Back`;
-- `Male`;
-- `Female`;
-- `Face visible`;
-- `Body visible`.
-
-Ejemplo:
+Examples:
 
 ```text
-Face only:     1
-Full body:     2
-Back:          1
-Side:          1
-Female:        2
-Male:          2
+only walking
+all people jumping
+photos on the beach
+people hugging
+full-body photos at sunset
 ```
 
-El selector intenta reservar primero las plazas necesarias para satisfacer estos mínimos y luego completa las plazas restantes con las mejores fotografías disponibles.
+This is not a second search system and it does not create an unlimited tag database. Instead, the custom request is appended to the **same multimodal analysis request** and the model returns one scalar:
 
-Una fotografía puede satisfacer varias categorías a la vez, pero solo ocupa una plaza del mosaico.
+```json
+"user_request_score": 0.0
+```
 
-### Contenido
-
-Existe una política de contenido:
+The value ranges from `0.0` to `1.0`:
 
 ```text
-Don't care
-Safe only
-NSFW only
+0.0 = does not satisfy the request
+0.5 = partially satisfies the request
+1.0 = satisfies the request very well
 ```
 
-`Safe only` evita seleccionar imágenes clasificadas como `suggestive`, `explicit` o `unknown`.
+The custom request has a configurable **Request Weight**. The result is combined with the normal quality score during ranking.
 
-### Calidad mínima
-
-También pueden configurarse:
-
-- calidad mínima de la imagen;
-- visibilidad mínima de la persona;
-- excluir fotografías borrosas;
-- excluir fotografías muy ocluidas.
-
-### Preferencias suaves
-
-Además de los mínimos obligatorios existen preferencias que añaden un pequeño bonus al ranking:
-
-- preferir face-only;
-- preferir full-body;
-- preferir front;
-- preferir side;
-- preferir back;
-- preferir una sola persona;
-- preferir face visible;
-- preferir body visible.
-
-La diferencia es importante:
+For example:
 
 ```text
-REQUIRED
-→ debe intentar cumplirse
+Base quality score      90
+Custom request match    95
+Request weight          30%
 
-PREFERRED
-→ mejora la selección, pero no bloquea el mosaico
+Final score = 90 × 70% + 95 × 30% = 91.5
 ```
 
-### Requisitos imposibles
+The custom request is persisted in the application settings. Cache entries are also keyed with a hash of the current request, so results from one request are never silently reused for a different request.
 
-Si una receta solicita, por ejemplo, 3 fotografías de espalda y solo existen 1 o 2 candidatas válidas, el selector no inventa fotografías. Registra el requisito no satisfecho en el log y utiliza las mejores candidatas restantes.
+### Person detection
 
-## Optimización automática del mosaico
+LLM analysis and physical person detection are separate layers.
 
-`Target Images = Automatic` es el modo pensado para que el usuario no tenga que decidir cuántas fotos caben.
+The multimodal model evaluates the image semantically. A dedicated detector produces actual person bounding boxes used later for crop generation and layout optimization.
 
-En este modo, AI Mosaic Builder no usa un número fijo como 12 o 20. Para cada conjunto candidato simula el comportamiento de empaquetado de `ImageMosaicView` y calcula:
+The detector backend is replaceable and currently supports a YOLO-based implementation.
 
-- tamaño real del crop de cada persona;
-- tamaño del sujeto dentro del crop;
-- zoom individual recomendado;
-- espacio disponible del canvas;
-- solapamiento con imágenes ya colocadas;
-- cantidad máxima de imágenes que puede incluir manteniendo un tamaño legible;
-- uso total del canvas.
+### Hard requirements and soft preferences
 
-`ImageMosaicView` busca posiciones con un barrido de 10 px y, cuando un elemento no cabe, reduce su zoom en pasos de `0.9`. El optimizador reproduce esa regla para que el JSON exportado tenga un resultado predecible al abrirse en el viewer.
+The **Filters** tab contains two different concepts.
 
-La diferencia importante es que AUTO no empieza todas las imágenes en `zoom = 0.5`. Primero calcula un zoom basado en el tamaño del sujeto y después busca el mayor nivel de zoom que todavía permite colocar el conjunto completo.
-
-Esto permite comportamientos como:
+Hard requirements define what the final selection is allowed to contain. Examples include:
 
 ```text
-Face crop pequeño
-→ zoom mayor
-→ rostro visible y aprovechado
-
-Full body grande
-→ zoom menor
-→ cuerpo completo sin ocupar todo el canvas
+Minimum Face-only images
+Minimum Full-body images
+Minimum Front images
+Minimum Side images
+Minimum Back images
+Minimum Male images
+Minimum Female images
+Minimum Face-visible images
+Minimum Body-visible images
+Minimum image quality
+Minimum person visibility
+Exclude blurry
+Exclude heavily occluded
+Content policy: Don't care / Safe only / NSFW only
 ```
 
-El optimizador también ordena los elementos por huella esperada para reducir fragmentación del espacio. La posición no se guarda en el JSON: el viewer la vuelve a calcular dinámicamente.
-
-### Ejemplo conceptual
+Soft preferences do not block an image; they only improve its ranking. Examples include:
 
 ```text
-Canvas: 1080 × 960
-
-300 fotos encontradas
-        ↓
-120 candidatas después de requisitos/ranking
-        ↓
-AUTO prueba diferentes cantidades
-        ↓
-para cada cantidad:
-    calcula crop
-    calcula zoom
-    simula packing
-    mide espacio utilizado
-    comprueba tamaño del sujeto
-        ↓
-elige el layout más útil
-        ↓
-por ejemplo: 14 imágenes
-con zooms diferentes
+Prefer face-only
+Prefer full-body
+Prefer front
+Prefer side
+Prefer back
+Prefer solo person
+Prefer face visible
+Prefer body visible
 ```
 
-La cantidad final no debe interpretarse como un límite rígido universal: depende de las dimensiones del canvas, las proporciones de los crops, los sujetos detectados, los requisitos y la calidad de las candidatas.
+A photo can satisfy more than one requirement while still consuming only one mosaic slot.
 
-### Modo manual
+### Ranking
 
-Si el usuario selecciona un número concreto, por ejemplo `12`, ese número se trata como una cantidad exacta solicitada. El sistema optimiza el zoom y el packing para esas 12 fotos, pero no cambia silenciosamente la cantidad a otra.
+Every eligible image receives a deterministic score from `0` to `100`.
 
-## Detección de personas
-
-El análisis del LLM y la detección física de la persona son capas separadas.
-
-El LLM decide si la fotografía es relevante y ayuda a evaluar el sujeto. El detector de personas proporciona bounding boxes reales para que posteriormente pueda calcularse el crop.
-
-La aplicación utiliza un backend de detección desacoplado para que pueda sustituirse por otro detector en el futuro sin modificar todo el pipeline.
-
-## Ranking y diversidad
-
-Después del análisis se calcula un `final_score` entre 0 y 100 combinando diferentes factores de calidad.
-
-La selección final sigue este orden conceptual:
+The current base ranking weights are:
 
 ```text
-calidad
-  ↓
-requisitos obligatorios
-  ↓
-preferencias
-  ↓
-diversidad
-  ↓
-optimización de layout
-  ↓
-mejores imágenes para el canvas
+Technical quality   20%
+Composition         15%
+Person visibility   20%
+Subject quality     15%
+Sharpness           15%
+Face visibility     10%
+Mosaic value         5%
 ```
 
-La etapa de diversidad evita seleccionar muchas fotografías prácticamente iguales.
+Additional penalties are applied for conditions such as high blur, occlusion, low subject visibility, poor composition, and very low image quality.
 
-El número de imágenes puede configurarse, por ejemplo:
+Soft preferences add a small bonus when enabled.
+
+When a `Custom Prompt` exists, its `user_request_score` becomes another ranking component through the configured Request Weight.
+
+After scoring, images are sorted by final score and receive a rank.
+
+### Diversity
+
+The application does not blindly select the top N scores. A perceptual-hash similarity step reduces repeated or nearly identical images so the final mosaic contains more visual variety.
+
+The selection process therefore combines:
 
 ```text
-4 / 6 / 9 / 12 / 16 / 20 / Automatic
+Base score
+   ↓
+Penalties
+   ↓
+Custom request score (when enabled)
+   ↓
+Hard eligibility
+   ↓
+Required composition counts
+   ↓
+Manual include / exclude decisions
+   ↓
+Diversity / similarity reduction
+   ↓
+Final mosaic candidates
 ```
 
-## Cache por carpeta
+## Mosaic selection and regeneration
 
-El cache pertenece a la carpeta de fotografías que se está analizando.
+Manual selection changes are first-class inputs to the project.
 
-Ejemplo:
+The user can:
 
 ```text
-G:/fotos/
-├── foto01.jpg
-├── foto02.jpg
-├── foto03.jpg
-└── .aimosaic/
-    └── analysis_cache.json
+✓ Include in Mosaic
+✗ Exclude from Mosaic
 ```
 
-La clave principal del cache es el SHA-256 del archivo.
+When a previously selected image is excluded, the application tries to fill the newly opened slot with the next eligible candidate.
 
-Esto permite que, si el usuario vuelve a analizar la misma carpeta, las fotografías que no han cambiado no vuelvan a pasar por el modelo.
+More importantly, pressing **Generate Mosaic** after changing manual decisions starts a **fresh selection/layout pass**. The previous generated `SELECTED` state and previous layout are discarded, while manual include/exclude decisions remain authoritative.
 
-Ejemplo:
+This prevents an old layout from contaminating a new one.
+
+Example:
 
 ```text
-Primera ejecución:
-10 fotos
-→ 10 análisis
+Target = 6
 
-Después se agregan 3 fotos:
-13 fotos detectadas
-→ 10 cache hits
-→ 3 análisis nuevos
+Generate
+→ A B C D E F
+
+Exclude C
+Include H
+
+Generate again
+→ recompute ranking/selection/layout from current rules
+→ six-image result using the updated manual choices
 ```
 
-Cambiar parámetros de selección, como `Target Images` o la receta del mosaico, no obliga a repetir el análisis de las fotografías ya almacenadas en cache.
+## Dynamic mosaic layout
 
-Cuando cambia el esquema del análisis, la versión de cache se incrementa para evitar reutilizar resultados antiguos que no contienen los nuevos atributos visuales.
+`Target Images` supports both:
 
-## Sesiones
+```text
+0 = Automatic
+```
 
-Además del cache de análisis, la aplicación guarda el estado de la sesión para poder recuperar el trabajo después de una interrupción.
+and any fixed positive number supported by the UI.
 
-Esto permite reanudar un procesamiento largo sin comenzar nuevamente desde cero.
+### Automatic mode
 
-## Settings
+AUTO is designed to answer the question:
 
-Los ajustes de la aplicación se guardan en JSON y se cargan al iniciar.
+> How many images can actually fit well on this canvas?
 
-Entre ellos están:
+The optimizer considers the configured canvas, detected person size, crop dimensions, minimum subject size, target subject size, padding, zoom, overlap, and available space.
 
-- última carpeta de origen;
-- modelo GGUF;
-- mmproj;
-- contexto;
-- capas GPU;
-- threads;
-- número objetivo de imágenes o `Automatic`;
-- dimensiones del canvas;
-- padding;
-- threshold de detección;
-- parámetros de ranking;
-- modelo del detector de personas;
-- requisitos y preferencias del mosaico;
-- directorio de cache.
+It is not based on a hardcoded number such as 12 or 20.
 
-## Exportación
+The target subject settings are configurable in the UI:
 
-La exportación está diseñada para ser compatible con el flujo de `ImageMosaicView`.
+```text
+Min Subject Size
+Target Subject Size
+```
 
-**AI Mosaic Builder no crea imágenes recortadas para el proyecto final.**
+They are expressed as a percentage of canvas height and converted into pixel targets for layout evaluation.
 
-No copia las fotos originales ni genera archivos de crop como parte del export.
+The optimizer therefore allows a small face crop to use more zoom while a larger full-body crop can use less zoom, helping the system make better use of the available canvas.
 
-Solo guarda el proyecto JSON con:
+### Fixed mode
 
-- `type`;
-- `filename` de la imagen original;
-- `coords` relativas del crop;
-- `zoom` calculado para ese elemento;
-- `canvas_size`.
+When the user specifies a number such as `5`, `6`, or `20`, the optimizer tries to produce exactly that many placements while satisfying the configured layout constraints.
 
-Ejemplo:
+### ImageMosaicView compatibility
+
+The layout logic is designed around the behavior used by the companion `ImageMosaicView` application.
+
+The generated project stores source-image references plus normalized crop coordinates and zoom values rather than producing permanent crop files.
+
+## Preview
+
+After **Generate Mosaic**, the **Preview** button becomes available.
+
+Preview uses the generated selection and renders the mosaic workflow so the user can inspect the result before exporting.
+
+The preview is intentionally separate from analysis and from the final image export.
+
+## Export
+
+There are two final export paths.
+
+### Export JSON
+
+The project export stores the recipe needed to reconstruct the mosaic from the original images, including:
+
+```text
+type
+filename
+crop coordinates
+zoom
+canvas size
+```
+
+Example:
 
 ```json
 [
   {
     "type": "body",
-    "filename": "evento/juan.jpg",
+    "filename": "photo_001.jpg",
     "coords": [0.15, 0.08, 0.61, 0.94],
     "zoom": 0.73,
     "canvas_size": [1080, 960]
@@ -412,113 +367,275 @@ Ejemplo:
 ]
 ```
 
-Las coordenadas se calculan sobre la imagen original y se almacenan en el rango `0..1`.
+Coordinates are normalized to `0..1`.
 
-El archivo se guarda directamente en la carpeta Source Folder:
+### Export Mosaic
 
-```text
-G:/fotos/mosaic.json
-```
+**Export Mosaic** renders the actual mosaic image from the generated selection/layout.
 
-Esto permite que `ImageMosaicView` utilice esa misma carpeta como directorio del proyecto y reconstruya el crop dinámicamente al cargar el JSON.
-
-## Flujo completo con ImageMosaicView
-
-Actualmente los proyectos están separados.
+Supported output formats are:
 
 ```text
-AI Mosaic Builder
-        ↓
-analiza fotos
-        ↓
-selecciona las mejores según la receta
-        ↓
-optimiza cantidad + zoom
-        ↓
-genera mosaic.json
-        ↓
-ImageMosaicView
-        ↓
-lee las fotos originales
-        ↓
-reconstruye los crops dinámicamente
-        ↓
-recalcula las posiciones del packing
-        ↓
-renderiza el mosaico
+PNG
+JPEG
+WEBP
 ```
 
-La integración final se mantiene deliberadamente separada para que AI Mosaic Builder pueda desarrollarse y probarse de forma independiente.
+The renderer runs in a background worker so image export does not intentionally block the Qt UI thread.
 
-## Instalación
+## Cache
 
-Las dependencias principales están en `requirements.txt`:
+Analysis cache is stored per source folder:
 
 ```text
-PySide6
-llama-cpp-python
-Pillow
-numpy
-ultralytics
-opencv-python
-imagehash
+G:/Pictures/MyCollection/
+├── photo001.jpg
+├── photo002.jpg
+└── .aimosaic/
+    └── analysis_cache.json
 ```
 
-Instalación:
+The cache is based on the image file hash and the analysis configuration relevant to the model result.
+
+The current cache identity includes the model name and a hash of the `Custom Prompt`, so the following are treated as separate analysis variants:
+
+```text
+No custom request
+"only walking"
+"people hugging"
+"photos on the beach"
+```
+
+`Open Folder` loads compatible cached analysis immediately so images can be displayed before any model work starts.
+
+`Analyze` then checks each image and skips cache hits. Only uncached or invalidated images go through multimodal inference.
+
+## Model lifetime and performance design
+
+The vision model is loaded once for an analysis run and reused for the entire image batch. The application does not reload the model for every individual photo.
+
+The analysis pipeline is intentionally sequential at the model level so the same loaded multimodal context can process a large collection without repeatedly paying the model-load cost.
+
+The UI uses Qt background workers for long-running operations such as:
+
+```text
+Model loading
+Image analysis
+Person detection / ranking
+Mosaic generation
+Mosaic image export
+```
+
+## llama.cpp configuration
+
+The UI exposes important inference settings instead of hardcoding them in the analysis pipeline.
+
+Current defaults include:
+
+```text
+Context       4096 tokens
+Max Tokens     576 tokens
+n_batch        512
+n_ubatch       512
+```
+
+Other configurable values include GPU layers, CPU threads, batch threads, and related runtime options.
+
+The integration detects whether parameters such as `n_batch`, `n_ubatch`, `n_threads_batch`, and Flash Attention are supported by the installed `llama-cpp-python` build before passing them to the runtime.
+
+For GPUs that need it, the application can enable `GGML_CUDA_FORCE_MMQ` and disable Flash Attention accordingly.
+
+## Logging
+
+Normal operation uses application-level logs instead of exposing the full internal llama.cpp debug stream.
+
+Typical useful messages look like:
+
+```text
+[MODEL] Loaded | 4.70s
+[SOURCE] Open Folder | 83 images | cache 60/83
+[ANALYZE] 61/83 | photo.jpg | 11.82s
+[GENERATE] Layout | 14 images | fill 87.4%
+[EXPORT MOSAIC] mosaic.png | 1.31s
+```
+
+Detailed inference profiling and low-level diagnostics are intended for debug mode rather than normal use.
+
+The code also records analysis timing, model-call timing, parse timing, prompt/completion token counts, and generation throughput when those metrics are available.
+
+## Settings persistence
+
+Application settings are stored as JSON in:
+
+```text
+data/settings.json
+```
+
+Persisted values include the selected model paths, source folder, inference parameters, canvas settings, target image count, crop settings, detector settings, ranking configuration, mosaic requirements, and the Custom Prompt plus its Request Weight.
+
+## UI structure
+
+The UI is organized around the real workflow instead of exposing every setting at once.
+
+### Workflow actions
+
+The main action area contains:
+
+```text
+Open Folder
+Analyze
+Stop
+Generate Mosaic
+Preview
+Export Mosaic
+```
+
+### Configuration tabs
+
+The settings area is grouped into:
+
+```text
+Project
+Analysis
+Mosaic
+Filters
+```
+
+The center area shows the image collection, while the right panel displays details for the selected image, including:
+
+```text
+Preview
+Scores
+Detected Attributes
+Crop Preview
+AI Notes
+Mosaic Selection
+```
+
+The detail panel also exposes manual Include/Exclude controls.
+
+## Project structure
+
+```text
+AIMosaicBuilder/
+│
+├── main.py
+├── requirements.txt
+├── README.md
+│
+├── engine/
+│   ├── vision_llm.py          # Local multimodal inference
+│   ├── llama_features.py      # llama.cpp capability detection
+│   ├── image_analyzer.py      # Discovery, hashing, cache, analysis pipeline
+│   ├── ranking.py             # Scores, requirements, preferences, diversity
+│   ├── layout_optimizer.py    # AUTO/FIXED selection and layout optimization
+│   ├── cache.py               # Analysis cache
+│   ├── models.py              # Dataclasses and data models
+│   ├── session.py             # Session persistence
+│   ├── storage.py             # JSON settings
+│   ├── runtime_config.py      # Runtime adapters
+│   ├── project_export.py      # JSON project export
+│   └── mosaic_image_export.py # Final mosaic image renderer
+│
+├── vision/
+│   ├── person_detector.py     # Person detection / bounding boxes
+│   ├── cropper.py             # Crop and thumbnail utilities
+│   └── similarity.py           # Similarity helpers
+│
+├── prompts/
+│   └── image_analysis.txt     # Editable vision prompt
+│
+├── ui/
+│   ├── main.py
+│   ├── settings.py
+│   ├── settings_extended.py
+│   ├── image_grid.py
+│   ├── image_detail.py
+│   ├── preview.py
+│   ├── workers.py
+│   ├── mosaic_export_worker.py
+│   └── styles.py
+│
+└── test_vision.py             # Multimodal smoke test
+```
+
+## Installation
+
+Install the Python dependencies from `requirements.txt`:
 
 ```cmd
 python -m pip install -r requirements.txt
 ```
 
-## Uso básico
+A working local `llama-cpp-python` build with the required multimodal support is required for vision analysis.
 
-1. Abrir AI Mosaic Builder.
-2. Seleccionar `Source Folder`.
-3. Seleccionar el modelo GGUF multimodal.
-4. Seleccionar el `mmproj` correspondiente.
-5. Seleccionar `Automatic` para que el programa determine la cantidad de imágenes, o indicar una cantidad fija.
-6. Definir los requisitos y preferencias del mosaico.
-7. Pulsar `Analyze`.
-8. Revisar las imágenes, scores, detecciones y atributos visuales.
-9. Pulsar `Generate Mosaic`.
-10. Se generará `mosaic.json` directamente dentro de la carpeta de origen.
-11. Abrir esa carpeta/proyecto con `ImageMosaicView`.
+## Basic usage
 
-## Prueba de visión
+1. Launch AI Mosaic Builder.
+2. Press **Open Folder** and select the photo collection.
+3. Confirm the image list appears before model inference starts.
+4. Select the local GGUF vision model and matching `mmproj` file.
+5. Configure the canvas and target image count.
+6. Define required composition, quality rules, and preferences in **Filters**.
+7. Optionally enter a **Custom Prompt**, such as `only walking`, and set its Request Weight.
+8. Press **Analyze**.
+9. Review image scores, detections, attributes, and AI Notes.
+10. Manually Include or Exclude images when needed.
+11. Press **Generate Mosaic** to build a fresh layout from the current rules and manual choices.
+12. Press **Preview** to inspect the generated composition.
+13. Press **Export JSON** to create the project recipe or **Export Mosaic** to render the final image.
 
-El repositorio incluye una prueba para validar primero la ruta multimodal con una sola imagen antes de procesar grandes cantidades.
-
-La prueba debe confirmar que:
+## Example configuration
 
 ```text
-imagen
-  ↓
-llama-cpp-python
-  ↓
-Gemma4ChatHandler
-  ↓
-encoder visual
-  ↓
-respuesta
-  ↓
-JSON
+Canvas:             1920 × 1080
+Target Images:      Automatic
+Crop Padding:       40 px
+Min Subject:        10% of canvas height
+Target Subject:     15% of canvas height
+Context:            4096 tokens
+Max Tokens:         576 tokens
+n_batch:            512
+n_ubatch:           512
+
+Requirements:
+  Face only:        1
+  Full body:        2
+  Face visible:     3
+  Body visible:     3
+  Content:          Safe only
+
+Custom Prompt:
+  "people walking on the beach"
+
+Request Weight:
+  30%
 ```
 
-No se considera válida una configuración que simplemente simule la entrada de imagen.
+## Design principles
 
-## Estado actual
+AI Mosaic Builder is intentionally modular:
 
-El proyecto se encuentra en desarrollo activo. La arquitectura principal, el análisis multimodal, el cache por carpeta, el ranking, la detección de personas, la receta de selección, la optimización de layout y la exportación JSON están separados en módulos para permitir seguir mejorando cada etapa sin acoplarlas entre sí.
+```text
+Photo discovery
+       ≠
+AI analysis
+       ≠
+Person detection
+       ≠
+Ranking
+       ≠
+Selection
+       ≠
+Layout
+       ≠
+Preview
+       ≠
+Export
+```
 
-## Principios del proyecto
+This separation makes it possible to improve the analyzer, ranking model, layout optimizer, or UI without turning every change into a rewrite of the entire application.
 
-- Todo el análisis es local.
-- Las fotografías no necesitan enviarse a servicios cloud.
-- El cache evita inferencias repetidas.
-- La UI no debe bloquearse durante el procesamiento.
-- El modelo multimodal no debe inventar bounding boxes.
-- Los crops del proyecto final son dinámicos y se reconstruyen desde las coordenadas guardadas.
-- El formato de exportación debe respetar el contrato real del visualizador que lo consume.
-- Los requisitos obligatorios tienen prioridad sobre el ranking simple.
-- Los atributos inciertos se marcan como `unknown` en vez de inventarse.
-- AUTO debe optimizar el aprovechamiento del canvas y el tamaño visible del sujeto, no usar un zoom fijo.
+## Current status
+
+The project is under active development. The core workflow is implemented around local multimodal analysis, per-folder caching, configurable ranking and requirements, person detection, custom request scoring, dynamic mosaic layout, manual selection overrides, preview, JSON project export, and final mosaic image export.

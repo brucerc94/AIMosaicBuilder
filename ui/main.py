@@ -13,9 +13,10 @@ from engine.image_analyzer import build_record, cache_model_key, discover_images
 from engine.models import ImageRecord, ImageStatus
 from engine.ranking import rank_records
 from engine.runtime_config import configure_vision_engine
-from engine.session import save_session
+from engine.session import load_excluded_folders, save_session
 from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
+from ui.exclude_folders import ExcludeFoldersDialog
 from ui.image_detail import ImageDetailPanel
 from ui.image_grid import ImageGrid
 from ui.mosaic_export_worker import MosaicExportWorker
@@ -42,6 +43,7 @@ class MainWindow(QMainWindow):
 
         self._records: list[ImageRecord] = []
         self._paths: list[str] = []
+        self._excluded_folders: list[str] = []
         self._loader = None
         self._analysis_worker = None
         self._post_worker = None
@@ -87,6 +89,7 @@ class MainWindow(QMainWindow):
     def _connect(self) -> None:
         self.settings_panel.settings_changed.connect(self._settings_changed)
         self.settings_panel.open_folder_requested.connect(self._open_folder)
+        self.settings_panel.exclude_folders_requested.connect(self._open_exclude_folders)
         self.settings_panel.analyze_requested.connect(self._start_analysis)
         self.settings_panel.stop_requested.connect(self._stop)
         self.settings_panel.generate_requested.connect(self._generate_project)
@@ -131,7 +134,8 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_source_folder(str(source))
 
         self._cache = self._get_cache_for_source(str(source))
-        self._paths = discover_images(str(source))
+        self._excluded_folders = load_excluded_folders(str(source))
+        self._paths = discover_images(str(source), self._excluded_folders)
         if not self._paths:
             self._records = []
             self.grid.clear()
@@ -139,7 +143,9 @@ class MainWindow(QMainWindow):
             self.settings_panel.set_generate_enabled(False)
             self.settings_panel.set_preview_enabled(False)
             self.settings_panel.set_export_mosaic_enabled(False)
-            self._summary.setText(f"No supported images found in {source}")
+            self._summary.setText(
+                f"No supported images found in {source} | excluded folders: {len(self._excluded_folders)}"
+            )
             return
 
         model_name = Path(self._settings.model_path).name if self._settings.model_path else ""
@@ -175,12 +181,95 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_export_mosaic_enabled(False)
         prompt_state = "custom request" if custom_prompt.strip() else "standard analysis"
         self._summary.setText(
-            f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | {prompt_state} | Ready to Analyze"
+            f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | "
+            f"excluded folders: {len(self._excluded_folders)} | {prompt_state} | Ready to Analyze"
         )
         logger.info(
-            "[source] Open Folder | folder=%s | images=%d | cache_hits=%d | model_loaded=%s | custom_request=%s",
-            source, len(records), cache_hits, self._engine.model_loaded,
+            "[source] Open Folder | folder=%s | images=%d | cache_hits=%d | excluded_folders=%d | model_loaded=%s | custom_request=%s",
+            source, len(records), cache_hits, len(self._excluded_folders), self._engine.model_loaded,
             "yes" if custom_prompt.strip() else "no",
+        )
+
+    def _open_exclude_folders(self) -> None:
+        """Show folder exclusions and immediately refresh the active image set."""
+        if self._loader or self._analysis_worker or self._post_worker or self._generate_worker or self._export_worker:
+            return
+        source_text = str(self._settings.last_source_folder or "").strip()
+        source = Path(source_text).expanduser().resolve() if source_text else None
+        if source is None or not source.is_dir():
+            QMessageBox.warning(self, "Exclude Folders", "Open a valid image folder first.")
+            return
+
+        dialog = ExcludeFoldersDialog(
+            str(source),
+            excluded_folders=self._excluded_folders,
+            parent=self,
+        )
+        if dialog.exec() != dialog.DialogCode.Accepted:
+            return
+
+        new_excluded = dialog.excluded_folders()
+        if new_excluded == self._excluded_folders:
+            return
+
+        self._excluded_folders = new_excluded
+        self._refresh_active_source_paths(str(source))
+        save_session(str(source), self._records, self._excluded_folders)
+        logger.info(
+            "[source] Exclude Folders changed | folder=%s | excluded=%s | active_images=%d",
+            source,
+            ", ".join(self._excluded_folders) if self._excluded_folders else "none",
+            len(self._paths),
+        )
+
+    def _refresh_active_source_paths(self, source_folder: str) -> None:
+        """Refresh paths after an exclusion change while preserving existing records."""
+        source = Path(source_folder).expanduser().resolve()
+        new_paths = discover_images(str(source), self._excluded_folders)
+        existing_by_path = {
+            str(Path(record.path).expanduser().resolve()): record
+            for record in self._records
+            if record.path
+        }
+        model_name = Path(self._settings.model_path).name if self._settings.model_path else ""
+        custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "")
+        cache_model = cache_model_key(model_name, custom_prompt) if model_name else ""
+
+        refreshed: list[ImageRecord] = []
+        cache_hits = 0
+        for path in new_paths:
+            normalized = str(Path(path).expanduser().resolve())
+            existing = existing_by_path.get(normalized)
+            if existing is not None:
+                refreshed.append(existing)
+                if existing.analysis is not None:
+                    cache_hits += 1
+                continue
+
+            p = Path(path)
+            record = ImageRecord(
+                path=str(p),
+                filename=p.name,
+                file_size=p.stat().st_size if p.exists() else 0,
+                status=ImageStatus.PENDING,
+            )
+            cached = self._cache.get_by_path(str(p), model=cache_model)
+            if cached is not None:
+                record.analysis = cached
+                record.status = ImageStatus.CACHED
+                cache_hits += 1
+            refreshed.append(record)
+
+        self._paths = new_paths
+        self._records = refreshed
+        self.grid.load_records(refreshed)
+        self.details.clear()
+        self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
+        self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
+        self._summary.setText(
+            f"{len(refreshed)} images active | cache: {cache_hits}/{len(refreshed)} | "
+            f"excluded folders: {len(self._excluded_folders)}"
         )
 
     def _start_analysis(self) -> None:
@@ -203,10 +292,9 @@ class MainWindow(QMainWindow):
         self._settings.cache_directory = str(source_cache_dir(folder))
         save_settings(self._settings)
 
+        self._paths = discover_images(str(folder), self._excluded_folders)
         if not self._paths:
-            self._paths = discover_images(str(folder))
-        if not self._paths:
-            QMessageBox.information(self, "Images", "No supported images were found.")
+            QMessageBox.information(self, "Images", "No supported images were found in the active folders.")
             return
 
         self._records = [build_record(path) for path in self._paths]
@@ -239,7 +327,7 @@ class MainWindow(QMainWindow):
         self.grid.upsert_record(record)
         self._summary.setText(f"Analyzing {done}/{total} — {record.filename}")
         if self._settings.last_source_folder:
-            save_session(self._settings.last_source_folder, self._records)
+            save_session(self._settings.last_source_folder, self._records, self._excluded_folders)
 
     def _on_analysis_finished(self, records: list[ImageRecord]) -> None:
         self._analysis_worker = None
@@ -264,7 +352,7 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_preview_enabled(False)
         self.settings_panel.set_export_mosaic_enabled(False)
         if self._settings.last_source_folder:
-            save_session(self._settings.last_source_folder, records)
+            save_session(self._settings.last_source_folder, records, self._excluded_folders)
         self._update_summary()
 
     def _selected_records(self) -> list[ImageRecord]:
@@ -287,7 +375,8 @@ class MainWindow(QMainWindow):
         candidates = len(self._layout_candidates())
         errors = sum(1 for r in self._records if r.status == ImageStatus.ERROR)
         self._summary.setText(
-            f"{len(self._records)} images | people: {people} | candidates: {candidates} | selected: {selected} | errors: {errors}"
+            f"{len(self._records)} images | people: {people} | candidates: {candidates} | "
+            f"selected: {selected} | errors: {errors} | excluded folders: {len(self._excluded_folders)}"
         )
 
     def _stop(self) -> None:
@@ -342,7 +431,7 @@ class MainWindow(QMainWindow):
         self.grid.load_records(self._records)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
         if self._settings.last_source_folder:
-            save_session(self._settings.last_source_folder, self._records)
+            save_session(self._settings.last_source_folder, self._records, self._excluded_folders)
         self._update_summary()
 
     def _generate_project(self) -> None:
@@ -534,6 +623,6 @@ class MainWindow(QMainWindow):
             self._preview_window = None
         save_settings(self._settings)
         if self._settings.last_source_folder and self._records:
-            save_session(self._settings.last_source_folder, self._records)
+            save_session(self._settings.last_source_folder, self._records, self._excluded_folders)
         self._engine.unload()
         event.accept()

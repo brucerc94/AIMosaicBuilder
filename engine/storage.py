@@ -37,12 +37,21 @@ def load_settings() -> AppSettings:
             # max_tokens was added after the original dataclass schema; keep it
             # backward-compatible with existing settings.json files.
             settings.max_tokens = max(64, min(4096, int(payload.get("max_tokens", 576))))
+            # Mosaic subject-size controls are persisted here so older
+            # AppSettings schemas remain backward-compatible.
+            settings.min_subject_percent = max(1.0, min(50.0, float(payload.get("min_subject_percent", 10.0))))
+            settings.target_subject_percent = max(
+                settings.min_subject_percent,
+                min(75.0, float(payload.get("target_subject_percent", 15.0))),
+            )
             return settings
         except Exception as e:
             logger.warning(f"[storage] Failed to load settings: {e} — using defaults")
     settings = AppSettings()
     settings.n_ctx = 4096
     settings.max_tokens = 576
+    settings.min_subject_percent = 10.0
+    settings.target_subject_percent = 15.0
     return settings
 
 
@@ -52,6 +61,13 @@ def save_settings(settings: AppSettings) -> None:
         payload = settings.to_dict()
         payload["n_ctx"] = int(getattr(settings, "n_ctx", 4096))
         payload["max_tokens"] = max(64, min(4096, int(getattr(settings, "max_tokens", 576))))
+        min_subject_percent = max(1.0, min(50.0, float(getattr(settings, "min_subject_percent", 10.0))))
+        target_subject_percent = max(
+            min_subject_percent,
+            min(75.0, float(getattr(settings, "target_subject_percent", 15.0))),
+        )
+        payload["min_subject_percent"] = min_subject_percent
+        payload["target_subject_percent"] = target_subject_percent
         SETTINGS_FILE.write_text(
             json.dumps(payload, indent=2, ensure_ascii=False),
             encoding="utf-8",

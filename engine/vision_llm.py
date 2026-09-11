@@ -26,41 +26,32 @@ except ImportError:
     Llama = None  # type: ignore
     _llama_available = False
 
-_SYSTEM_PROMPT = """You are a photo evaluator for a portrait mosaic.
-Analyze the supplied photograph and return ONLY one valid JSON object.
-Do not explain anything. Use unknown for uncertain visual attributes.
-Include a concise human-readable note in the \"notes\" field summarizing the most useful visual observation for mosaic selection."""
+_PROMPT_PATH = Path(__file__).resolve().parent.parent / "prompts" / "image_analysis.txt"
 
-_USER_PROMPT = """Analyze this photo for a portrait mosaic. Return ONLY JSON.
-Required fields:
-{
-  "has_person": boolean,
-  "person_count": integer,
-  "main_subject_is_person": boolean,
-  "person_visibility": number 0..1,
-  "face_visible": boolean,
-  "body_visible": boolean,
-  "occluded": boolean,
-  "blur": number 0..1,
-  "composition": number 0..1,
-  "image_quality": number 0..1,
-  "subject_quality": number 0..1,
-  "mosaic_value": number 0..1,
-  "visual_tags": {
-    "framing": "face_only|head_shoulders|upper_body|half_body|full_body|unknown",
-    "orientation": "front|three_quarter_front|side|three_quarter_back|back|unknown",
-    "gender_presentation": "male|female|unknown",
-    "content_rating": "safe|suggestive|explicit|unknown",
-    "pose": "standing|seated|lying|walking|other|unknown",
-    "looking_at_camera": boolean
-  },
-  "reject": boolean,
-  "reject_reason": "no_person|blurry|low_quality|occluded|person_too_small|empty",
-  "notes": string
-}
-Be conservative. gender_presentation is visual presentation only.
-For "notes", write one concise sentence (preferably under 25 words) describing the most useful visual fact about the person/photo for mosaic selection, such as framing, pose, visibility, composition, quality, or notable limitations.
-"""
+
+def _load_analysis_prompt() -> tuple[str, str]:
+    """Load the editable system/user vision prompt from the repository text file."""
+    try:
+        text = _PROMPT_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise RuntimeError(f"Vision analysis prompt not found: {_PROMPT_PATH}") from exc
+
+    system_marker = "[SYSTEM]\n"
+    user_marker = "\n[USER]\n"
+    if not text.startswith(system_marker) or user_marker not in text:
+        raise RuntimeError(
+            f"Invalid vision analysis prompt format in {_PROMPT_PATH}. "
+            "Expected [SYSTEM] and [USER] sections."
+        )
+    system_prompt, user_prompt = text[len(system_marker):].split(user_marker, 1)
+    system_prompt = system_prompt.strip()
+    user_prompt = user_prompt.strip()
+    if not system_prompt or not user_prompt:
+        raise RuntimeError(f"Vision analysis prompt contains an empty section: {_PROMPT_PATH}")
+    return system_prompt, user_prompt
+
+
+_SYSTEM_PROMPT, _USER_PROMPT = _load_analysis_prompt()
 
 
 def _detect_gpu_info() -> Optional[dict]:
@@ -322,9 +313,8 @@ class VisionLLMEngine:
                 extra["n_threads_batch"] = effective_n_threads_batch
                 logger.info("[vision] n_threads_batch=%d", effective_n_threads_batch)
 
-            # n_batch / n_ubatch: CRITICAL — controls how many tokens are evaluated per GPU call.
-            # Default (512) is fine for text, but multimodal image-token batches can stall if
-            # llama.cpp falls back to a smaller value. Explicitly set to match AIStoryWriter.
+            # n_batch / n_ubatch: controls how many tokens are evaluated per GPU call.
+            # Explicitly pass them when the installed build supports them.
             if caps["n_batch_param"]:
                 extra["n_batch"] = n_batch
                 logger.info("[vision] n_batch=%d", n_batch)
@@ -351,7 +341,7 @@ class VisionLLMEngine:
                 "n_ctx": configured_ctx,
                 "n_gpu_layers": n_gpu_layers,
                 "n_threads": n_threads,
-                "verbose": True,
+                "verbose": False,
                 **extra,
             }
             logger.info(
@@ -364,7 +354,7 @@ class VisionLLMEngine:
                 extra.get("n_ubatch", "not_set"),
                 extra.get("flash_attn", "not_set"),
                 os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
-                mechanism, handler_name, True,
+                mechanism, handler_name, False,
             )
             try:
                 self._model = Llama(**kwargs)
@@ -385,7 +375,7 @@ class VisionLLMEngine:
                 n_threads, extra.get("n_threads_batch", "default"),
                 extra.get("flash_attn", "default"),
                 os.environ.get("GGML_CUDA_FORCE_MMQ", "0"),
-                hex(id(self._model)), True,
+                hex(id(self._model)), False,
             )
             if progress_callback:
                 progress_callback("Vision model ready.")

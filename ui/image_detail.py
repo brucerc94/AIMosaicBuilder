@@ -267,7 +267,16 @@ class ImageDetailPanel(QWidget):
         self._lbl_framing.setText(str(tags.get("framing", "unknown")).replace("_", " ").title())
         self._lbl_orientation.setText(str(tags.get("orientation", "unknown")).replace("_", " ").title())
         self._lbl_gender.setText(str(tags.get("gender_presentation", "unknown")).title())
-        self._lbl_content.setText(str(tags.get("content_rating", "unknown")).title())
+
+        content_rating = str(tags.get("content_rating", "unknown")).lower()
+        content_label = {
+            "safe": "SFW",
+            "suggestive": "NSFW",
+            "explicit": "NSFW",
+            "unknown": "Unknown",
+        }.get(content_rating, "Unknown")
+        self._lbl_content.setText(content_label)
+
         self._lbl_pose.setText(str(tags.get("pose", "unknown")).replace("_", " ").title())
         gaze = tags.get("looking_at_camera")
         self._lbl_gaze.setText(("Yes" if gaze else "No") if isinstance(gaze, bool) else "Unknown")

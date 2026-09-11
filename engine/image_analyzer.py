@@ -30,6 +30,7 @@ from engine.models import (
     ImageStatus,
     RejectReason,
 )
+from engine.session import load_session
 from engine.vision_llm import VisionLLMEngine
 
 logger = logging.getLogger("image_analyzer")
@@ -182,13 +183,28 @@ class AnalysisPipeline:
         self._inference_seconds = 0.0
 
     def run(self, paths: list[str]) -> list[ImageRecord]:
-        """Process image paths, reusing cache only for the same model + custom request."""
+        """Process image paths, reusing cache and compatible saved records."""
         run_started = time.perf_counter()
         total = len(paths)
         results: list[ImageRecord] = []
         model_name = self._engine.model_name
         custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()[:2000]
         cache_model = cache_model_key(model_name, custom_prompt)
+
+        session_by_path: dict[str, ImageRecord] = {}
+        source_folder = str(getattr(self._settings, "last_source_folder", "") or "")
+        if source_folder:
+            try:
+                saved_records = load_session(source_folder) or []
+                session_by_path = {
+                    str(Path(record.path).expanduser().resolve()): record
+                    for record in saved_records
+                    if record.path
+                }
+                if session_by_path:
+                    logger.info("[analyzer] Loaded %d saved records from source session", len(session_by_path))
+            except Exception as exc:
+                logger.warning("[analyzer] Could not load saved session: %s", exc)
 
         logger.info(
             "[analyzer] START | images=%d | model=%s | engine_loaded=%s | custom_request=%s",
@@ -251,12 +267,25 @@ class AnalysisPipeline:
                 continue
             seen_hashes.add(file_hash)
 
+            # Restore the full ImageRecord only when the exact file contents
+            # match the saved record. This preserves detections/ranking/manual
+            # choices without ever applying stale state to a replaced image.
+            saved_record = session_by_path.get(str(Path(path).expanduser().resolve()))
+            if saved_record is not None and saved_record.file_hash == file_hash:
+                record = saved_record
+                record.path = path
+                record.filename = Path(path).name
+                record.file_size = os.path.getsize(path)
+                record.width, record.height = get_image_dimensions(path)
+                record.file_hash = file_hash
+
             cache_started = time.perf_counter()
             cached = self._cache.get(file_hash, model=cache_model)
             cache_elapsed = time.perf_counter() - cache_started
             if cached is not None:
                 record.analysis = cached
                 record.status = ImageStatus.CACHED
+                record.error_message = ""
                 self._n_cache_hits += 1
                 if cached.has_person:
                     self._n_people += 1
@@ -265,8 +294,9 @@ class AnalysisPipeline:
                 phash_elapsed = time.perf_counter() - phash_started
                 total_elapsed = time.perf_counter() - image_started
                 logger.info(
-                    "[analyzer] CACHE HIT | %d/%d | image=%s | cache=%.3fs | phash=%.3fs | total=%.3fs",
+                    "[analyzer] CACHE HIT | %d/%d | image=%s | cache=%.3fs | phash=%.3fs | total=%.3fs | restored_record=%s",
                     idx + 1, total, Path(path).name, cache_elapsed, phash_elapsed, total_elapsed,
+                    "yes" if saved_record is not None and saved_record.file_hash == file_hash else "no",
                 )
                 results.append(record)
                 self._emit_progress(idx + 1, total, record)
@@ -301,8 +331,6 @@ class AnalysisPipeline:
 
             record.analysis = analysis
             if analysis_failed or analysis.reject_reason == RejectReason.LLM_ERROR.value:
-                # A runtime/model failure is an ERROR, not a real content rejection.
-                # This distinction keeps failures out of the normal rejected pool.
                 record.status = ImageStatus.ERROR
                 record.error_message = analysis.notes or "Vision analysis failed."
             else:

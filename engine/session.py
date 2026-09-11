@@ -1,17 +1,16 @@
 """
 Session persistence for AI Mosaic Builder.
 
-Saves and restores the full list of ImageRecords so the user can
-stop mid-analysis and resume from where they left off.
+Saves and restores the full list of ImageRecords next to the source folder's
+analysis cache so a project is self-contained and can be moved/copied with
+its state.
 
-Session file: data/session.json
-One file per source folder (keyed by folder path hash so different
-folders don't overwrite each other).
+Session file:
+    <source>/.aimosaic/session.json
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 from pathlib import Path
@@ -21,21 +20,22 @@ from engine.models import ImageRecord
 
 logger = logging.getLogger("session")
 
-_SESSION_DIR = Path(__file__).parent.parent / "data" / "sessions"
+_SESSION_FILENAME = "session.json"
+_SESSION_DIRNAME = ".aimosaic"
 
 
 def _session_path(source_folder: str) -> Path:
-    key = hashlib.md5(source_folder.encode()).hexdigest()[:16]
-    return _SESSION_DIR / f"session_{key}.json"
+    source = Path(source_folder).expanduser().resolve()
+    return source / _SESSION_DIRNAME / _SESSION_FILENAME
 
 
 def save_session(source_folder: str, records: list[ImageRecord]) -> None:
-    """Persist the current list of ImageRecords to disk."""
-    _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    """Persist the current list of ImageRecords inside the source folder."""
     path = _session_path(source_folder)
     try:
+        path.parent.mkdir(parents=True, exist_ok=True)
         data = {
-            "source_folder": source_folder,
+            "source_folder": str(Path(source_folder).expanduser().resolve()),
             "records": [r.to_dict() for r in records],
         }
         tmp = path.with_suffix(".tmp")
@@ -44,29 +44,28 @@ def save_session(source_folder: str, records: list[ImageRecord]) -> None:
             encoding="utf-8",
         )
         tmp.replace(path)
-        logger.info(f"[session] Saved {len(records)} records for {source_folder}")
+        logger.info("[session] Saved %d records to %s", len(records), path)
     except Exception as e:
-        logger.error(f"[session] Failed to save session: {e}")
+        logger.error("[session] Failed to save session: %s", e)
 
 
 def load_session(source_folder: str) -> Optional[list[ImageRecord]]:
-    """
-    Load previously saved ImageRecords for the given source folder.
-    Returns None if no session exists or it cannot be parsed.
-    """
+    """Load previously saved ImageRecords for the given source folder."""
     path = _session_path(source_folder)
     if not path.exists():
         return None
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-        if data.get("source_folder") != source_folder:
+        expected_source = str(Path(source_folder).expanduser().resolve())
+        saved_source = str(data.get("source_folder", ""))
+        if saved_source and str(Path(saved_source).expanduser().resolve()) != expected_source:
             logger.warning("[session] Source folder mismatch — ignoring saved session")
             return None
         records = [ImageRecord.from_dict(r) for r in data.get("records", [])]
-        logger.info(f"[session] Loaded {len(records)} records for {source_folder}")
+        logger.info("[session] Loaded %d records from %s", len(records), path)
         return records
     except Exception as e:
-        logger.warning(f"[session] Cannot load session: {e}")
+        logger.warning("[session] Cannot load %s: %s", path, e)
         return None
 
 
@@ -74,7 +73,7 @@ def delete_session(source_folder: str) -> None:
     path = _session_path(source_folder)
     if path.exists():
         path.unlink()
-        logger.info(f"[session] Deleted session for {source_folder}")
+        logger.info("[session] Deleted session %s", path)
 
 
 def session_exists(source_folder: str) -> bool:
@@ -82,6 +81,6 @@ def session_exists(source_folder: str) -> bool:
 
 
 def count_processed(records: list[ImageRecord]) -> int:
-    """Number of records that have already been through analysis (any state other than PENDING)."""
+    """Number of records that have already been through analysis."""
     from engine.models import ImageStatus
     return sum(1 for r in records if r.status != ImageStatus.PENDING)

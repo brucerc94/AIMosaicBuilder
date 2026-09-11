@@ -166,18 +166,53 @@ def compute_score(
     )
 
 
+def _phash_distance(record: ImageRecord, other: ImageRecord) -> Optional[int]:
+    """Return pHash Hamming distance, or None when either image has no pHash."""
+    if not record.phash or not other.phash:
+        return None
+    try:
+        import imagehash
+        return imagehash.hex_to_hash(record.phash) - imagehash.hex_to_hash(other.phash)
+    except Exception:
+        return None
+
+
 def _too_similar(record: ImageRecord, selected: list[ImageRecord], threshold: int) -> bool:
     if not record.phash:
         return False
-    try:
-        import imagehash
-        current = imagehash.hex_to_hash(record.phash)
-        return any(
-            other.phash and (current - imagehash.hex_to_hash(other.phash)) <= threshold
-            for other in selected
-        )
-    except Exception:
-        return False
+    return any(
+        distance is not None and distance <= threshold
+        for other in selected
+        for distance in (_phash_distance(record, other),)
+    )
+
+
+def _diversity_adjusted_score(
+    record: ImageRecord,
+    selected: list[ImageRecord],
+    phash_threshold: int,
+    penalty_weight: float = 15.0,
+) -> float:
+    """Score a candidate while softly penalizing visual repetition.
+
+    The existing ranking score remains untouched. During selection, the closest
+    already-selected pHash receives a penalty that fades linearly to zero at
+    ``phash_threshold``. This is safer than hard-rejecting similar images because
+    a genuinely better image can still win when there are no good alternatives.
+    """
+    base_score = record.ranking.final_score if record.ranking else 0.0
+    if base_score <= 0.0 or not selected or phash_threshold <= 0 or not record.phash:
+        return base_score
+
+    closest_similarity = 0.0
+    for other in selected:
+        distance = _phash_distance(record, other)
+        if distance is None or distance >= phash_threshold:
+            continue
+        similarity = 1.0 - (distance / float(phash_threshold))
+        closest_similarity = max(closest_similarity, similarity)
+
+    return base_score - (penalty_weight * closest_similarity)
 
 
 def _selection_requirement_counts(requirements: MosaicRequirements) -> dict[str, int]:
@@ -401,12 +436,18 @@ def apply_diversity_filter(
                 r for r in candidates
                 if r not in selected
                 and _matches_requirement(r, name)
-                and not _too_similar(r, selected, phash_threshold)
             ]
             if not matching:
                 unmet.append(name)
                 break
-            best = matching[0]
+            best = max(
+                matching,
+                key=lambda r: (
+                    _diversity_adjusted_score(r, selected, phash_threshold),
+                    r.ranking.final_score if r.ranking else 0.0,
+                    r.filename.lower(),
+                ),
+            )
             best.status = ImageStatus.SELECTED
             selected.append(best)
             if len(selected) >= target:
@@ -415,15 +456,20 @@ def apply_diversity_filter(
             break
 
     if len(selected) < target:
-        for record in candidates:
-            if len(selected) >= target:
+        while len(selected) < target:
+            remaining = [record for record in candidates if record not in selected]
+            if not remaining:
                 break
-            if record in selected:
-                continue
-            if _too_similar(record, selected, phash_threshold):
-                continue
-            record.status = ImageStatus.SELECTED
-            selected.append(record)
+            best = max(
+                remaining,
+                key=lambda r: (
+                    _diversity_adjusted_score(r, selected, phash_threshold),
+                    r.ranking.final_score if r.ranking else 0.0,
+                    r.filename.lower(),
+                ),
+            )
+            best.status = ImageStatus.SELECTED
+            selected.append(best)
 
     selected_paths = {record.path for record in selected}
     for record in records:

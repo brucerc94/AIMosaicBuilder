@@ -25,7 +25,11 @@ from engine.models import ImageAnalysis, RejectReason
 
 logger = logging.getLogger("cache")
 
-_CACHE_VERSION = 2
+# ImageAnalysis.analysis_version is currently 3. Keep the cache schema aligned
+# with it. Version 2 cache entries are accepted when they already contain a
+# version-3 ImageAnalysis; they are upgraded in memory and rewritten on flush.
+_CACHE_VERSION = 3
+_LEGACY_CACHE_VERSIONS = {2}
 _DEFAULT_CACHE_FILENAME = "analysis_cache.json"
 _DEFAULT_CACHE_DIRNAME = ".aimosaic"
 
@@ -38,6 +42,10 @@ def _is_reusable_analysis(analysis: ImageAnalysis) -> bool:
     otherwise permanently poison the analysis for that image.
     """
     return analysis.reject_reason != RejectReason.LLM_ERROR.value
+
+
+def _is_compatible_entry_version(value: object) -> bool:
+    return value == _CACHE_VERSION or value in _LEGACY_CACHE_VERSIONS
 
 
 class AnalysisCache:
@@ -71,7 +79,7 @@ class AnalysisCache:
             logger.debug(f"[cache] MISS {file_hash[:12]}…")
             return None
 
-        if entry.get("analysis_version") != _CACHE_VERSION:
+        if not _is_compatible_entry_version(entry.get("analysis_version")):
             logger.debug(
                 f"[cache] MISS (analysis version changed) {file_hash[:12]}… "
                 f"cached={entry.get('analysis_version', '?')} requested={_CACHE_VERSION}"
@@ -102,6 +110,9 @@ class AnalysisCache:
                 self._data.pop(file_hash, None)
                 self._dirty = True
                 return None
+            if entry.get("analysis_version") != _CACHE_VERSION:
+                entry["analysis_version"] = _CACHE_VERSION
+                self._dirty = True
             logger.debug(
                 f"[cache] HIT  {file_hash[:12]}… "
                 f"path={entry.get('path', '?')}"
@@ -115,7 +126,7 @@ class AnalysisCache:
         """Hydrate an analysis from a source-folder cache without hashing the file."""
         requested = Path(path).expanduser().resolve()
         for file_hash, entry in list(self._data.items()):
-            if entry.get("analysis_version") != _CACHE_VERSION:
+            if not _is_compatible_entry_version(entry.get("analysis_version")):
                 continue
             if model and entry.get("model", "") != model:
                 continue
@@ -137,6 +148,9 @@ class AnalysisCache:
                     self._data.pop(file_hash, None)
                     self._dirty = True
                     return None
+                if entry.get("analysis_version") != _CACHE_VERSION:
+                    entry["analysis_version"] = _CACHE_VERSION
+                    self._dirty = True
                 logger.debug("[cache] PATH HIT path=%s", path)
                 return analysis
             except Exception:
@@ -166,7 +180,7 @@ class AnalysisCache:
 
     def has(self, file_hash: str) -> bool:
         entry = self._data.get(file_hash)
-        return bool(entry and entry.get("analysis_version") == _CACHE_VERSION)
+        return bool(entry and _is_compatible_entry_version(entry.get("analysis_version")))
 
     def size(self) -> int:
         return len(self._data)

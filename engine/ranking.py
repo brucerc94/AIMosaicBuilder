@@ -145,12 +145,142 @@ def compute_score(
     )
 
 
+def _too_similar(record: ImageRecord, selected: list[ImageRecord], threshold: int) -> bool:
+    if not record.phash:
+        return False
+    try:
+        import imagehash
+        current = imagehash.hex_to_hash(record.phash)
+        return any(
+            other.phash and (current - imagehash.hex_to_hash(other.phash)) <= threshold
+            for other in selected
+        )
+    except Exception:
+        return False
+
+
+def _selection_requirement_counts(requirements: MosaicRequirements) -> dict[str, int]:
+    names = (
+        "face_only", "full_body", "front", "side", "back",
+        "male", "female", "face_visible", "body_visible",
+    )
+    return {
+        name: max(0, int(getattr(requirements, f"min_{name}")))
+        for name in names
+    }
+
+
+def _selection_deficits(
+    selected: list[ImageRecord],
+    requirements: MosaicRequirements,
+) -> dict[str, int]:
+    deficits = _selection_requirement_counts(requirements)
+    for record in selected:
+        for name in deficits:
+            if deficits[name] > 0 and _matches_requirement(record, name):
+                deficits[name] -= 1
+    return deficits
+
+
+def _refill_selection_after_exclusion(
+    records: list[ImageRecord],
+    target_count: int,
+    requirements: MosaicRequirements,
+    phash_threshold: int = 10,
+) -> None:
+    """Replace manually excluded selected images without changing the target size.
+
+    Existing selected records are preserved. A vacancy is first filled by a
+    candidate that repairs an unmet mosaic requirement, then by the highest
+    ranked eligible candidate. Diversity is preferred but never blocks a valid
+    replacement when no diverse candidate remains.
+    """
+    if target_count <= 0:
+        return
+
+    selected = [
+        record
+        for record in records
+        if record.status == ImageStatus.SELECTED and not record.manually_excluded
+    ]
+    if len(selected) >= target_count:
+        return
+
+    for record in records:
+        if record.manually_excluded and record.status == ImageStatus.SELECTED:
+            record.status = ImageStatus.REJECTED
+
+    candidates = [
+        record
+        for record in records
+        if record not in selected
+        and record.analysis
+        and record.analysis.has_person
+        and record.detections
+        and record.ranking
+        and record.ranking.final_score > 0
+        and _hard_eligible(record, requirements)
+    ]
+    candidates.sort(
+        key=lambda record: (
+            -(1 if record.manually_included else 0),
+            -(record.ranking.final_score if record.ranking else 0.0),
+            record.filename.lower(),
+        )
+    )
+
+    deficits = _selection_deficits(selected, requirements)
+    added: list[ImageRecord] = []
+
+    def choose(require_diverse: bool) -> Optional[ImageRecord]:
+        options: list[tuple[int, float, str, ImageRecord]] = []
+        for record in candidates:
+            if record in added:
+                continue
+            if require_diverse and _too_similar(record, selected + added, phash_threshold):
+                continue
+            coverage = sum(
+                1
+                for name, deficit in deficits.items()
+                if deficit > 0 and _matches_requirement(record, name)
+            )
+            options.append((coverage, record.ranking.final_score if record.ranking else 0.0, record.filename.lower(), record))
+        if not options:
+            return None
+        options.sort(key=lambda item: (-item[0], -item[1], item[2]))
+        return options[0][3]
+
+    while len(selected) + len(added) < target_count:
+        replacement = choose(require_diverse=True)
+        if replacement is None:
+            replacement = choose(require_diverse=False)
+        if replacement is None:
+            break
+        replacement.status = ImageStatus.SELECTED
+        added.append(replacement)
+        for name in deficits:
+            if deficits[name] > 0 and _matches_requirement(replacement, name):
+                deficits[name] -= 1
+
+    if added:
+        logger.info(
+            "Selection refill after manual exclusion: restored %d slot(s) to %d/%d using %s",
+            len(added),
+            len(selected) + len(added),
+            target_count,
+            ", ".join(record.filename for record in added),
+        )
+
+
 def rank_records(
     records: list[ImageRecord],
     weights: Optional[RankingWeights] = None,
     requirements: Optional[MosaicRequirements] = None,
 ) -> list[ImageRecord]:
     requirements = requirements or MosaicRequirements()
+    selected_before = sum(1 for record in records if record.status == ImageStatus.SELECTED)
+    had_manual_exclusion = any(record.manually_excluded for record in records)
+
     for record in records:
         if record.analysis and not record.manually_excluded:
             record.ranking = compute_score(
@@ -188,21 +318,16 @@ def rank_records(
             rank += 1
         elif record.ranking:
             record.ranking.rank = 0
-    return ordered
 
-
-def _too_similar(record: ImageRecord, selected: list[ImageRecord], threshold: int) -> bool:
-    if not record.phash:
-        return False
-    try:
-        import imagehash
-        current = imagehash.hex_to_hash(record.phash)
-        return any(
-            other.phash and (current - imagehash.hex_to_hash(other.phash)) <= threshold
-            for other in selected
+    if had_manual_exclusion and selected_before > 0:
+        _refill_selection_after_exclusion(
+            ordered,
+            target_count=selected_before,
+            requirements=requirements,
+            phash_threshold=10,
         )
-    except Exception:
-        return False
+
+    return ordered
 
 
 def apply_diversity_filter(

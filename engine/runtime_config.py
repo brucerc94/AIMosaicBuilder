@@ -4,7 +4,7 @@ from __future__ import annotations
 from functools import wraps
 from typing import Any
 
-_DEFAULT_MAX_TOKENS = 256
+_DEFAULT_MAX_TOKENS = 576
 
 
 def _coerce_max_tokens(value: Any) -> int:

@@ -7,7 +7,7 @@ Right-side panel showing:
   - Analysis scores
   - Person detection info
   - Detected visual attributes
-  - Manual override controls
+  - Mosaic selection controls
 """
 
 from __future__ import annotations
@@ -189,17 +189,26 @@ class ImageDetailPanel(QWidget):
         notes_v.addWidget(self._notes_label)
         layout.addWidget(notes_grp)
 
-        override_grp = QGroupBox("Manual Override")
-        override_v = QVBoxLayout(override_grp)
-        self._btn_include = QPushButton("✓  Force Include")
+        selection_grp = QGroupBox("Mosaic Selection")
+        selection_v = QVBoxLayout(selection_grp)
+        self._selection_hint = QLabel(
+            "Manual exclusion removes this photo from the mosaic selection and automatically fills the open slot with the next eligible candidate."
+        )
+        self._selection_hint.setWordWrap(True)
+        self._selection_hint.setStyleSheet("color: #7f849c; font-size: 10px;")
+        selection_v.addWidget(self._selection_hint)
+
+        self._btn_include = QPushButton("✓  Include in Mosaic")
         self._btn_include.setObjectName("success_btn")
+        self._btn_include.setToolTip("Manually require this image to be eligible for the mosaic selection.")
         self._btn_include.clicked.connect(self._on_include)
-        self._btn_exclude = QPushButton("✗  Force Exclude")
+        self._btn_exclude = QPushButton("✗  Exclude from Mosaic")
         self._btn_exclude.setObjectName("danger_btn")
+        self._btn_exclude.setToolTip("Manually prevent this image from being selected for the mosaic.")
         self._btn_exclude.clicked.connect(self._on_exclude)
-        override_v.addWidget(self._btn_include)
-        override_v.addWidget(self._btn_exclude)
-        layout.addWidget(override_grp)
+        selection_v.addWidget(self._btn_include)
+        selection_v.addWidget(self._btn_exclude)
+        layout.addWidget(selection_grp)
 
         layout.addStretch()
         scroll.setWidget(container)
@@ -230,6 +239,8 @@ class ImageDetailPanel(QWidget):
         ]:
             lbl.setText("—")
         self._notes_label.setText("—")
+        self._btn_include.setText("✓  Include in Mosaic")
+        self._btn_exclude.setText("✗  Exclude from Mosaic")
 
     def _update_preview(self, record: ImageRecord) -> None:
         try:
@@ -267,16 +278,14 @@ class ImageDetailPanel(QWidget):
         self._lbl_framing.setText(str(tags.get("framing", "unknown")).replace("_", " ").title())
         self._lbl_orientation.setText(str(tags.get("orientation", "unknown")).replace("_", " ").title())
         self._lbl_gender.setText(str(tags.get("gender_presentation", "unknown")).title())
-
-        content_rating = str(tags.get("content_rating", "unknown")).lower()
+        content = str(tags.get("content_rating", "unknown"))
         content_label = {
             "safe": "SFW",
             "suggestive": "NSFW",
             "explicit": "NSFW",
             "unknown": "Unknown",
-        }.get(content_rating, "Unknown")
+        }.get(content, "Unknown")
         self._lbl_content.setText(content_label)
-
         self._lbl_pose.setText(str(tags.get("pose", "unknown")).replace("_", " ").title())
         gaze = tags.get("looking_at_camera")
         self._lbl_gaze.setText(("Yes" if gaze else "No") if isinstance(gaze, bool) else "Unknown")
@@ -316,8 +325,12 @@ class ImageDetailPanel(QWidget):
             self._notes_label.setText("—")
 
     def _update_buttons(self, record: ImageRecord) -> None:
-        self._btn_include.setText("✓  Included (click to undo)" if record.manually_included else "✓  Force Include")
-        self._btn_exclude.setText("✗  Excluded (click to undo)" if record.manually_excluded else "✗  Force Exclude")
+        self._btn_include.setText(
+            "✓  Included (click to undo)" if record.manually_included else "✓  Include in Mosaic"
+        )
+        self._btn_exclude.setText(
+            "✗  Excluded (click to allow again)" if record.manually_excluded else "✗  Exclude from Mosaic"
+        )
 
     def _on_include(self) -> None:
         if self._current_record:

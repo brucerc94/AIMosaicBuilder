@@ -16,15 +16,7 @@ _profile_hooks_installed = False
 
 
 def _install_profile_hooks() -> None:
-    """Install process-local timings around llama.cpp completion/generation.
-
-    AIMosaicBuilder uses a custom multimodal chat handler, so the application's
-    outer create_chat_completion() timer includes handler work that llama.cpp's
-    own perf summary does not expose clearly. These wrappers let us separate:
-    - Llama.create_completion() total time invoked by the handler
-    - Llama.generate() generation/decoder time
-    The wrappers are installed once per Python process and preserve signatures.
-    """
+    """Install diagnostics around llama.cpp and silence verbose output normally."""
     global _profile_hooks_installed
     if _profile_hooks_installed:
         return
@@ -35,72 +27,91 @@ def _install_profile_hooks() -> None:
 
     installed_any = False
 
-    original_create_completion = getattr(Llama, "create_completion", None)
-    if original_create_completion is not None and not getattr(original_create_completion, "_aimosaic_profile", False):
-        @wraps(original_create_completion)
-        def timed_create_completion(self, *args, **kwargs):
-            started = time.perf_counter()
-            try:
-                return original_create_completion(self, *args, **kwargs)
-            finally:
-                elapsed = time.perf_counter() - started
-                prompt = kwargs.get("prompt")
-                if prompt is None and args:
-                    prompt = args[0]
-                if isinstance(prompt, (list, tuple)):
-                    prompt_kind = "tokens"
-                    prompt_len = len(prompt)
-                elif isinstance(prompt, str):
-                    prompt_kind = "text"
-                    prompt_len = len(prompt)
-                else:
-                    prompt_kind = type(prompt).__name__
-                    prompt_len = -1
-                logger.info(
-                    "[vision-profile] Llama.create_completion | elapsed=%.3fs | "
-                    "prompt_kind=%s | prompt_len=%d | max_tokens=%s | stream=%s",
-                    elapsed,
-                    prompt_kind,
-                    prompt_len,
-                    kwargs.get("max_tokens", "?"),
-                    kwargs.get("stream", False),
-                )
+    # The vision engine historically passes verbose=True. Override that only
+    # outside --debug so llama.cpp's internal scheduler/prompt dumps stay out
+    # of the normal application log. The wrapper preserves Llama.__init__'s
+    # signature for capability introspection.
+    original_init = getattr(Llama, "__init__", None)
+    if original_init is not None and not getattr(original_init, "_aimosaic_quiet", False):
+        @wraps(original_init)
+        def quiet_init(self, *args, **kwargs):
+            if not logger.isEnabledFor(logging.DEBUG):
+                kwargs["verbose"] = False
+            return original_init(self, *args, **kwargs)
 
-        timed_create_completion._aimosaic_profile = True
-        Llama.create_completion = timed_create_completion
+        quiet_init._aimosaic_quiet = True
+        Llama.__init__ = quiet_init
         installed_any = True
 
-    original_generate = getattr(Llama, "generate", None)
-    if original_generate is not None and not getattr(original_generate, "_aimosaic_profile", False):
-        @wraps(original_generate)
-        def timed_generate(self, *args, **kwargs):
-            started = time.perf_counter()
-            yielded = 0
-            iterator = None
-            try:
-                iterator = original_generate(self, *args, **kwargs)
-                for item in iterator:
-                    yielded += 1
-                    yield item
-            finally:
-                elapsed = time.perf_counter() - started
-                logger.info(
-                    "[vision-profile] Llama.generate | elapsed=%.3fs | yielded=%d | "
-                    "max_tokens=%s | temp=%s | top_k=%s",
-                    elapsed,
-                    yielded,
-                    kwargs.get("max_tokens", "?"),
-                    kwargs.get("temp", "?"),
-                    kwargs.get("top_k", "?"),
-                )
+    # Detailed timing hooks are useful for performance investigations, but are
+    # intentionally DEBUG-only so normal users get a concise operational log.
+    if logger.isEnabledFor(logging.DEBUG):
+        original_create_completion = getattr(Llama, "create_completion", None)
+        if original_create_completion is not None and not getattr(original_create_completion, "_aimosaic_profile", False):
+            @wraps(original_create_completion)
+            def timed_create_completion(self, *args, **kwargs):
+                started = time.perf_counter()
+                try:
+                    return original_create_completion(self, *args, **kwargs)
+                finally:
+                    elapsed = time.perf_counter() - started
+                    prompt = kwargs.get("prompt")
+                    if prompt is None and args:
+                        prompt = args[0]
+                    if isinstance(prompt, (list, tuple)):
+                        prompt_kind = "tokens"
+                        prompt_len = len(prompt)
+                    elif isinstance(prompt, str):
+                        prompt_kind = "text"
+                        prompt_len = len(prompt)
+                    else:
+                        prompt_kind = type(prompt).__name__
+                        prompt_len = -1
+                    logger.debug(
+                        "[vision-profile] Llama.create_completion | elapsed=%.3fs | "
+                        "prompt_kind=%s | prompt_len=%d | max_tokens=%s | stream=%s",
+                        elapsed,
+                        prompt_kind,
+                        prompt_len,
+                        kwargs.get("max_tokens", "?"),
+                        kwargs.get("stream", False),
+                    )
 
-        timed_generate._aimosaic_profile = True
-        Llama.generate = timed_generate
-        installed_any = True
+            timed_create_completion._aimosaic_profile = True
+            Llama.create_completion = timed_create_completion
+            installed_any = True
+
+        original_generate = getattr(Llama, "generate", None)
+        if original_generate is not None and not getattr(original_generate, "_aimosaic_profile", False):
+            @wraps(original_generate)
+            def timed_generate(self, *args, **kwargs):
+                started = time.perf_counter()
+                yielded = 0
+                iterator = None
+                try:
+                    iterator = original_generate(self, *args, **kwargs)
+                    for item in iterator:
+                        yielded += 1
+                        yield item
+                finally:
+                    elapsed = time.perf_counter() - started
+                    logger.debug(
+                        "[vision-profile] Llama.generate | elapsed=%.3fs | yielded=%d | "
+                        "max_tokens=%s | temp=%s | top_k=%s",
+                        elapsed,
+                        yielded,
+                        kwargs.get("max_tokens", "?"),
+                        kwargs.get("temp", "?"),
+                        kwargs.get("top_k", "?"),
+                    )
+
+            timed_generate._aimosaic_profile = True
+            Llama.generate = timed_generate
+            installed_any = True
 
     _profile_hooks_installed = installed_any
-    if installed_any:
-        logger.info("[vision-profile] llama.cpp completion/generation profiling hooks installed")
+    if logger.isEnabledFor(logging.DEBUG) and installed_any:
+        logger.debug("[vision-profile] diagnostics enabled")
 
 
 def _get_init_params() -> set[str]:

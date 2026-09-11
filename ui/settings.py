@@ -1,197 +1,245 @@
-"""Settings panel for AI Mosaic Builder."""
+"""Organized settings and workflow panel for AI Mosaic Builder."""
 from __future__ import annotations
 
-import logging
 import os
 
 from PySide6.QtCore import Signal
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
-    QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea, QSpinBox,
-    QVBoxLayout, QWidget,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QFormLayout,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QSpinBox,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
 )
 
 from engine.models import AppSettings
 
-logger = logging.getLogger("ui.settings")
-
 
 class SettingsPanel(QWidget):
+    """Compact workflow-first configuration panel.
+
+    Actions stay visible at the top; detailed settings are grouped into tabs.
+    All controls update the shared AppSettings object and remain persistent.
+    """
+
     settings_changed = Signal(object)
+    open_folder_requested = Signal()
     analyze_requested = Signal()
     stop_requested = Signal()
     generate_requested = Signal()
+    preview_requested = Signal()
+    export_mosaic_requested = Signal()
 
-    def __init__(self, settings: AppSettings, parent: QWidget = None) -> None:
+    def __init__(self, settings: AppSettings, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._settings = settings
         self._building = True
         self._build_ui()
-        self._building = False
         self._populate(settings)
+        self._building = False
 
+    # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(8)
+
+        workflow = QGroupBox("Workflow")
+        workflow_layout = QGridLayout(workflow)
+        workflow_layout.setContentsMargins(8, 8, 8, 8)
+        workflow_layout.setHorizontalSpacing(6)
+        workflow_layout.setVerticalSpacing(6)
+
+        self._btn_open_folder = QPushButton("📂  Open Folder")
+        self._btn_analyze = QPushButton("▶  Analyze")
+        self._btn_stop = QPushButton("■  Stop")
+        self._btn_generate = QPushButton("🖼  Generate Mosaic")
+        self._btn_preview = QPushButton("👁  Preview")
+        self._btn_export_mosaic = QPushButton("💾  Export Mosaic")
+
+        self._btn_analyze.setObjectName("primary_btn")
+        self._btn_stop.setObjectName("danger_btn")
+        self._btn_generate.setObjectName("success_btn")
+        self._btn_export_mosaic.setObjectName("success_btn")
+
+        self._btn_stop.setEnabled(False)
+        self._btn_generate.setEnabled(False)
+        self._btn_preview.setEnabled(False)
+        self._btn_export_mosaic.setEnabled(False)
+
+        self._btn_open_folder.clicked.connect(self.open_folder_requested.emit)
+        self._btn_analyze.clicked.connect(self.analyze_requested.emit)
+        self._btn_stop.clicked.connect(self.stop_requested.emit)
+        self._btn_generate.clicked.connect(self.generate_requested.emit)
+        self._btn_preview.clicked.connect(self.preview_requested.emit)
+        self._btn_export_mosaic.clicked.connect(self.export_mosaic_requested.emit)
+
+        workflow_layout.addWidget(self._btn_open_folder, 0, 0, 1, 2)
+        workflow_layout.addWidget(self._btn_analyze, 1, 0)
+        workflow_layout.addWidget(self._btn_stop, 1, 1)
+        workflow_layout.addWidget(self._btn_generate, 2, 0, 1, 2)
+        workflow_layout.addWidget(self._btn_preview, 3, 0)
+        workflow_layout.addWidget(self._btn_export_mosaic, 3, 1)
+        outer.addWidget(workflow)
+
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_project_tab(), "Project")
+        self._tabs.addTab(self._build_analysis_tab(), "Analysis")
+        self._tabs.addTab(self._build_mosaic_tab(), "Mosaic")
+        self._tabs.addTab(self._build_filters_tab(), "Filters")
+        outer.addWidget(self._tabs, 1)
+
+    def _scroll_tab(self, content: QWidget) -> QScrollArea:
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFrameShape(scroll.Shape.NoFrame)
-        container = QWidget()
-        layout = QVBoxLayout(container)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(10)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(content)
+        return scroll
 
-        grp_src = QGroupBox("Source")
-        f_src = QFormLayout(grp_src)
+    def _tab_container(self) -> tuple[QWidget, QVBoxLayout]:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(2, 6, 2, 6)
+        layout.setSpacing(8)
+        return widget, layout
+
+    def _build_project_tab(self) -> QWidget:
+        content, layout = self._tab_container()
+
+        source = QGroupBox("Source")
+        source_form = QFormLayout(source)
         self._folder_edit = QLineEdit()
-        self._folder_edit.setPlaceholderText("Select folder…")
         self._folder_edit.setReadOnly(True)
-        btn_browse = QPushButton("Browse…")
-        btn_browse.clicked.connect(self._browse_folder)
-        row_folder = QHBoxLayout()
-        row_folder.addWidget(self._folder_edit)
-        row_folder.addWidget(btn_browse)
-        f_src.addRow("Folder:", row_folder)
-        layout.addWidget(grp_src)
+        self._folder_edit.setPlaceholderText("Open an image folder…")
+        source_form.addRow("Folder:", self._folder_edit)
+        layout.addWidget(source)
 
-        grp_model = QGroupBox("Vision Model")
-        f_model = QFormLayout(grp_model)
+        model = QGroupBox("Vision Model")
+        model_form = QFormLayout(model)
         self._model_edit = QLineEdit()
         self._model_edit.setPlaceholderText("Path to .gguf model…")
-        btn_model = QPushButton("Browse…")
-        btn_model.clicked.connect(self._browse_model)
-        row_model = QHBoxLayout()
-        row_model.addWidget(self._model_edit)
-        row_model.addWidget(btn_model)
-        f_model.addRow("Model:", row_model)
+        model_form.addRow("Model:", self._browse_row(self._model_edit, self._browse_model))
         self._mmproj_edit = QLineEdit()
-        self._mmproj_edit.setPlaceholderText("mmproj .gguf (for vision)…")
-        btn_mmproj = QPushButton("Browse…")
-        btn_mmproj.clicked.connect(self._browse_mmproj)
-        row_mm = QHBoxLayout()
-        row_mm.addWidget(self._mmproj_edit)
-        row_mm.addWidget(btn_mmproj)
-        f_model.addRow("mmproj:", row_mm)
-        layout.addWidget(grp_model)
+        self._mmproj_edit.setPlaceholderText("mmproj .gguf…")
+        model_form.addRow("mmproj:", self._browse_row(self._mmproj_edit, self._browse_mmproj))
+        layout.addWidget(model)
+        layout.addStretch(1)
+        return self._scroll_tab(content)
 
-        grp_inf = QGroupBox("Inference")
-        f_inf = QFormLayout(grp_inf)
-        self._gpu_spin = QSpinBox()
-        self._gpu_spin.setRange(-1, 999)
-        self._gpu_spin.setSuffix(" layers")
-        self._gpu_spin.setToolTip("-1 = all layers, 0 = CPU only")
-        f_inf.addRow("GPU Layers:", self._gpu_spin)
-        self._ctx_spin = QSpinBox()
-        self._ctx_spin.setRange(2048, 131072)
-        self._ctx_spin.setSingleStep(512)
-        self._ctx_spin.setSuffix(" tokens")
-        self._ctx_spin.setToolTip("Minimum 2048 tokens for Gemma-4 vision analysis.")
-        f_inf.addRow("Context:", self._ctx_spin)
-        self._threads_spin = QSpinBox()
-        self._threads_spin.setRange(1, 64)
-        f_inf.addRow("CPU Threads:", self._threads_spin)
-        self._batch_threads_spin = QSpinBox()
-        self._batch_threads_spin.setRange(0, 64)
-        self._batch_threads_spin.setToolTip("0 = use CPU Threads value. Controls parallel token evaluation on CPU.")
-        f_inf.addRow("Batch Threads:", self._batch_threads_spin)
-        self._n_batch_spin = QSpinBox()
-        self._n_batch_spin.setRange(64, 4096)
-        self._n_batch_spin.setSingleStep(64)
-        self._n_batch_spin.setToolTip("Tokens evaluated per batch. 512 recommended. Higher = faster prompt eval, more VRAM.")
-        f_inf.addRow("n_batch:", self._n_batch_spin)
-        self._n_ubatch_spin = QSpinBox()
-        self._n_ubatch_spin.setRange(64, 4096)
-        self._n_ubatch_spin.setSingleStep(64)
-        self._n_ubatch_spin.setToolTip("Micro-batch size for CUDA. Must be ≤ n_batch. 512 recommended for GTX 1660 Ti.")
-        f_inf.addRow("n_ubatch:", self._n_ubatch_spin)
-        layout.addWidget(grp_inf)
+    def _build_analysis_tab(self) -> QWidget:
+        content, layout = self._tab_container()
 
-        grp_detector = QGroupBox("Person Detector")
-        f_det = QFormLayout(grp_detector)
-        self._detector_model_edit = QLineEdit()
-        self._detector_model_edit.setPlaceholderText("YOLO model, e.g. yolo26n.pt")
-        btn_detector = QPushButton("Browse…")
-        btn_detector.clicked.connect(self._browse_detector_model)
-        row_det = QHBoxLayout()
-        row_det.addWidget(self._detector_model_edit)
-        row_det.addWidget(btn_detector)
-        f_det.addRow("YOLO Model:", row_det)
-        self._detector_conf_spin = QDoubleSpinBox()
-        self._detector_conf_spin.setRange(0.05, 0.95)
-        self._detector_conf_spin.setSingleStep(0.05)
-        self._detector_conf_spin.setDecimals(2)
-        f_det.addRow("Confidence:", self._detector_conf_spin)
-        layout.addWidget(grp_detector)
+        inference = QGroupBox("Vision Inference")
+        form = QFormLayout(inference)
+        self._gpu_spin = QSpinBox(); self._gpu_spin.setRange(-1, 999); self._gpu_spin.setSuffix(" layers"); self._gpu_spin.setToolTip("-1 = all layers, 0 = CPU only")
+        self._ctx_spin = QSpinBox(); self._ctx_spin.setRange(2048, 131072); self._ctx_spin.setSingleStep(512); self._ctx_spin.setSuffix(" tokens")
+        self._max_tokens_spin = QSpinBox(); self._max_tokens_spin.setRange(64, 4096); self._max_tokens_spin.setSingleStep(32); self._max_tokens_spin.setSuffix(" tokens")
+        self._threads_spin = QSpinBox(); self._threads_spin.setRange(1, 64); self._threads_spin.setSuffix(" threads")
+        self._batch_threads_spin = QSpinBox(); self._batch_threads_spin.setRange(0, 64); self._batch_threads_spin.setSuffix(" threads")
+        self._n_batch_spin = QSpinBox(); self._n_batch_spin.setRange(64, 4096); self._n_batch_spin.setSingleStep(64)
+        self._n_ubatch_spin = QSpinBox(); self._n_ubatch_spin.setRange(64, 4096); self._n_ubatch_spin.setSingleStep(64)
+        self._ctx_spin.setToolTip("Context window. 4096 is the recommended default for Gemma-4 vision.")
+        self._max_tokens_spin.setToolTip("Maximum generated tokens for the analysis JSON. 576 is the recommended default.")
+        self._n_ubatch_spin.setToolTip("CUDA micro-batch. Must be ≤ n_batch.")
+        form.addRow("GPU Layers:", self._gpu_spin)
+        form.addRow("Context:", self._ctx_spin)
+        form.addRow("Max Tokens:", self._max_tokens_spin)
+        form.addRow("CPU Threads:", self._threads_spin)
+        form.addRow("Batch Threads:", self._batch_threads_spin)
+        form.addRow("n_batch:", self._n_batch_spin)
+        form.addRow("n_ubatch:", self._n_ubatch_spin)
+        layout.addWidget(inference)
 
-        grp_mosaic = QGroupBox("Mosaic")
-        f_mosaic = QFormLayout(grp_mosaic)
-        self._target_combo = QComboBox()
-        for val in [0, 4, 6, 9, 12, 16, 20]:
-            self._target_combo.addItem("Automatic" if val == 0 else str(val), val)
-        f_mosaic.addRow("Target Images:", self._target_combo)
-        self._padding_spin = QSpinBox()
-        self._padding_spin.setRange(0, 500)
-        self._padding_spin.setSuffix(" px")
-        f_mosaic.addRow("Crop Padding:", self._padding_spin)
-        self._canvas_w_spin = QSpinBox()
-        self._canvas_w_spin.setRange(800, 16000)
-        self._canvas_w_spin.setSingleStep(240)
-        self._canvas_w_spin.setSuffix(" px")
-        f_mosaic.addRow("Canvas Width:", self._canvas_w_spin)
-        self._canvas_h_spin = QSpinBox()
-        self._canvas_h_spin.setRange(600, 12000)
-        self._canvas_h_spin.setSingleStep(240)
-        self._canvas_h_spin.setSuffix(" px")
-        f_mosaic.addRow("Canvas Height:", self._canvas_h_spin)
-        layout.addWidget(grp_mosaic)
+        detector = QGroupBox("Person Detector")
+        dform = QFormLayout(detector)
+        self._detector_model_edit = QLineEdit(); self._detector_model_edit.setPlaceholderText("YOLO model .pt / .onnx")
+        dform.addRow("YOLO Model:", self._browse_row(self._detector_model_edit, self._browse_detector_model))
+        self._detector_conf_spin = QDoubleSpinBox(); self._detector_conf_spin.setRange(0.05, 0.95); self._detector_conf_spin.setSingleStep(0.05); self._detector_conf_spin.setDecimals(2)
+        dform.addRow("Confidence:", self._detector_conf_spin)
+        layout.addWidget(detector)
+        layout.addStretch(1)
+        return self._scroll_tab(content)
 
-        grp_req = QGroupBox("Mosaic Requirements")
-        req_layout = QVBoxLayout(grp_req)
-        req_layout.addWidget(QLabel("Minimum required images (0 = no requirement)"))
-        req_form = QFormLayout()
-        self._req_face_only = QSpinBox(); self._req_face_only.setRange(0, 99)
-        self._req_full_body = QSpinBox(); self._req_full_body.setRange(0, 99)
-        self._req_front = QSpinBox(); self._req_front.setRange(0, 99)
-        self._req_side = QSpinBox(); self._req_side.setRange(0, 99)
-        self._req_back = QSpinBox(); self._req_back.setRange(0, 99)
-        self._req_male = QSpinBox(); self._req_male.setRange(0, 99)
-        self._req_female = QSpinBox(); self._req_female.setRange(0, 99)
-        self._req_face_visible = QSpinBox(); self._req_face_visible.setRange(0, 99)
-        self._req_body_visible = QSpinBox(); self._req_body_visible.setRange(0, 99)
-        req_form.addRow("Face only:", self._req_face_only)
-        req_form.addRow("Full body:", self._req_full_body)
-        req_form.addRow("Front:", self._req_front)
-        req_form.addRow("Side:", self._req_side)
-        req_form.addRow("Back:", self._req_back)
-        req_form.addRow("Male:", self._req_male)
-        req_form.addRow("Female:", self._req_female)
-        req_form.addRow("Face visible:", self._req_face_visible)
-        req_form.addRow("Body visible:", self._req_body_visible)
-        req_layout.addLayout(req_form)
+    def _build_mosaic_tab(self) -> QWidget:
+        content, layout = self._tab_container()
 
+        mosaic = QGroupBox("Layout")
+        form = QFormLayout(mosaic)
+        self._target_spin = QSpinBox(); self._target_spin.setRange(0, 200); self._target_spin.setSuffix(" images"); self._target_spin.setToolTip("0 = Automatic. Any positive number is allowed.")
+        self._padding_spin = QSpinBox(); self._padding_spin.setRange(0, 500); self._padding_spin.setSuffix(" px")
+        self._canvas_w_spin = QSpinBox(); self._canvas_w_spin.setRange(800, 16000); self._canvas_w_spin.setSingleStep(240); self._canvas_w_spin.setSuffix(" px")
+        self._canvas_h_spin = QSpinBox(); self._canvas_h_spin.setRange(600, 12000); self._canvas_h_spin.setSingleStep(240); self._canvas_h_spin.setSuffix(" px")
+        self._min_subject_percent_spin = QDoubleSpinBox(); self._min_subject_percent_spin.setRange(1.0, 50.0); self._min_subject_percent_spin.setSingleStep(1.0); self._min_subject_percent_spin.setDecimals(1); self._min_subject_percent_spin.setSuffix(" % of H")
+        self._target_subject_percent_spin = QDoubleSpinBox(); self._target_subject_percent_spin.setRange(1.0, 75.0); self._target_subject_percent_spin.setSingleStep(1.0); self._target_subject_percent_spin.setDecimals(1); self._target_subject_percent_spin.setSuffix(" % of H")
+        form.addRow("Target Images:", self._target_spin)
+        form.addRow("Crop Padding:", self._padding_spin)
+        form.addRow("Canvas Width:", self._canvas_w_spin)
+        form.addRow("Canvas Height:", self._canvas_h_spin)
+        form.addRow("Min Subject:", self._min_subject_percent_spin)
+        form.addRow("Target Subject:", self._target_subject_percent_spin)
+        layout.addWidget(mosaic)
+
+        explanation = QLabel(
+            "Subject sizes are relative to canvas height. The minimum is a hard lower bound; "
+            "the target is preferred when choosing the best layout."
+        )
+        explanation.setWordWrap(True)
+        explanation.setObjectName("section_label")
+        layout.addWidget(explanation)
+        layout.addStretch(1)
+        return self._scroll_tab(content)
+
+    def _build_filters_tab(self) -> QWidget:
+        content, layout = self._tab_container()
+
+        req = QGroupBox("Required Composition")
+        form = QFormLayout(req)
+        self._req_face_only = self._count_spin(); self._req_full_body = self._count_spin()
+        self._req_front = self._count_spin(); self._req_side = self._count_spin(); self._req_back = self._count_spin()
+        self._req_male = self._count_spin(); self._req_female = self._count_spin()
+        self._req_face_visible = self._count_spin(); self._req_body_visible = self._count_spin()
+        form.addRow("Face only:", self._req_face_only)
+        form.addRow("Full body:", self._req_full_body)
+        form.addRow("Front:", self._req_front)
+        form.addRow("Side:", self._req_side)
+        form.addRow("Back:", self._req_back)
+        form.addRow("Male:", self._req_male)
+        form.addRow("Female:", self._req_female)
+        form.addRow("Face visible:", self._req_face_visible)
+        form.addRow("Body visible:", self._req_body_visible)
+        layout.addWidget(req)
+
+        quality = QGroupBox("Quality / Content")
+        qbox = QVBoxLayout(quality)
         content_row = QHBoxLayout()
         content_row.addWidget(QLabel("Content:"))
-        self._req_nsfw = QComboBox()
-        self._req_nsfw.addItem("Don't care", "any")
-        self._req_nsfw.addItem("Safe only", "safe_only")
-        self._req_nsfw.addItem("NSFW only", "nsfw_only")
-        content_row.addWidget(self._req_nsfw)
-        req_layout.addLayout(content_row)
+        self._req_nsfw = QComboBox(); self._req_nsfw.addItem("Don't care", "any"); self._req_nsfw.addItem("Safe only", "safe_only"); self._req_nsfw.addItem("NSFW only", "nsfw_only")
+        content_row.addWidget(self._req_nsfw, 1)
+        qbox.addLayout(content_row)
+        self._req_exclude_blurry = QCheckBox("Exclude blurry")
+        self._req_exclude_occluded = QCheckBox("Exclude heavily occluded")
+        qbox.addWidget(self._req_exclude_blurry)
+        qbox.addWidget(self._req_exclude_occluded)
+        qform = QFormLayout()
+        self._req_min_quality = QDoubleSpinBox(); self._req_min_quality.setRange(0, 1); self._req_min_quality.setSingleStep(0.05); self._req_min_quality.setDecimals(2)
+        self._req_min_visibility = QDoubleSpinBox(); self._req_min_visibility.setRange(0, 1); self._req_min_visibility.setSingleStep(0.05); self._req_min_visibility.setDecimals(2)
+        qform.addRow("Min image quality:", self._req_min_quality)
+        qform.addRow("Min visibility:", self._req_min_visibility)
+        qbox.addLayout(qform)
+        layout.addWidget(quality)
 
-        self._req_exclude_blurry = QCheckBox("Exclude blurry images")
-        self._req_exclude_occluded = QCheckBox("Exclude heavily occluded images")
-        req_layout.addWidget(self._req_exclude_blurry)
-        req_layout.addWidget(self._req_exclude_occluded)
-
-        quality_form = QFormLayout()
-        self._req_min_quality = QDoubleSpinBox(); self._req_min_quality.setRange(0.0, 1.0); self._req_min_quality.setSingleStep(0.05); self._req_min_quality.setDecimals(2); self._req_min_quality.setSuffix(" / 1")
-        self._req_min_visibility = QDoubleSpinBox(); self._req_min_visibility.setRange(0.0, 1.0); self._req_min_visibility.setSingleStep(0.05); self._req_min_visibility.setDecimals(2); self._req_min_visibility.setSuffix(" / 1")
-        quality_form.addRow("Min image quality:", self._req_min_quality)
-        quality_form.addRow("Min person visibility:", self._req_min_visibility)
-        req_layout.addLayout(quality_form)
-
-        req_layout.addWidget(QLabel("Soft preferences (used to break ties and improve the recipe)"))
+        prefs = QGroupBox("Preferences")
+        pbox = QVBoxLayout(prefs)
         self._pref_face_only = QCheckBox("Prefer face-only")
         self._pref_full_body = QCheckBox("Prefer full-body")
         self._pref_front = QCheckBox("Prefer front")
@@ -200,111 +248,116 @@ class SettingsPanel(QWidget):
         self._pref_solo = QCheckBox("Prefer solo person")
         self._pref_face_visible = QCheckBox("Prefer face visible")
         self._pref_body_visible = QCheckBox("Prefer body visible")
-        for widget in (
+        for item in (self._pref_face_only, self._pref_full_body, self._pref_front, self._pref_side, self._pref_back, self._pref_solo, self._pref_face_visible, self._pref_body_visible):
+            pbox.addWidget(item)
+        layout.addWidget(prefs)
+
+        thresholds = QGroupBox("Image / Similarity")
+        tform = QFormLayout(thresholds)
+        self._min_w_spin = QSpinBox(); self._min_w_spin.setRange(50, 2000); self._min_w_spin.setSuffix(" px")
+        self._min_h_spin = QSpinBox(); self._min_h_spin.setRange(50, 2000); self._min_h_spin.setSuffix(" px")
+        self._similarity_spin = QSpinBox(); self._similarity_spin.setRange(0, 64)
+        tform.addRow("Min Width:", self._min_w_spin)
+        tform.addRow("Min Height:", self._min_h_spin)
+        tform.addRow("Similarity:", self._similarity_spin)
+        layout.addWidget(thresholds)
+        layout.addStretch(1)
+        return self._scroll_tab(content)
+
+    # ------------------------------------------------------------- helpers
+    @staticmethod
+    def _count_spin() -> QSpinBox:
+        spin = QSpinBox()
+        spin.setRange(0, 99)
+        return spin
+
+    @staticmethod
+    def _browse_row(edit: QLineEdit, callback) -> QWidget:
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        layout.addWidget(edit, 1)
+        button = QPushButton("…")
+        button.setFixedWidth(30)
+        button.clicked.connect(callback)
+        layout.addWidget(button)
+        return row
+
+    def _connect_settings_widget(self, widget: QWidget) -> None:
+        if isinstance(widget, QLineEdit):
+            widget.textChanged.connect(self._on_changed)
+        elif isinstance(widget, QComboBox):
+            widget.currentIndexChanged.connect(self._on_changed)
+        elif isinstance(widget, QCheckBox):
+            widget.stateChanged.connect(self._on_changed)
+        elif isinstance(widget, (QSpinBox, QDoubleSpinBox)):
+            widget.valueChanged.connect(self._on_changed)
+
+    def _all_settings_widgets(self) -> list[QWidget]:
+        return [
+            self._model_edit, self._mmproj_edit,
+            self._gpu_spin, self._ctx_spin, self._max_tokens_spin, self._threads_spin,
+            self._batch_threads_spin, self._n_batch_spin, self._n_ubatch_spin,
+            self._detector_model_edit, self._detector_conf_spin,
+            self._target_spin, self._padding_spin, self._canvas_w_spin, self._canvas_h_spin,
+            self._min_subject_percent_spin, self._target_subject_percent_spin,
+            self._req_face_only, self._req_full_body, self._req_front, self._req_side,
+            self._req_back, self._req_male, self._req_female, self._req_face_visible,
+            self._req_body_visible, self._req_nsfw, self._req_exclude_blurry,
+            self._req_exclude_occluded, self._req_min_quality, self._req_min_visibility,
             self._pref_face_only, self._pref_full_body, self._pref_front, self._pref_side,
             self._pref_back, self._pref_solo, self._pref_face_visible, self._pref_body_visible,
-        ):
-            req_layout.addWidget(widget)
-        layout.addWidget(grp_req)
-
-        grp_thresh = QGroupBox("Thresholds")
-        f_thresh = QFormLayout(grp_thresh)
-        self._min_w_spin = QSpinBox(); self._min_w_spin.setRange(50, 2000); self._min_w_spin.setSuffix(" px"); f_thresh.addRow("Min Width:", self._min_w_spin)
-        self._min_h_spin = QSpinBox(); self._min_h_spin.setRange(50, 2000); self._min_h_spin.setSuffix(" px"); f_thresh.addRow("Min Height:", self._min_h_spin)
-        self._similarity_spin = QSpinBox(); self._similarity_spin.setRange(0, 64); f_thresh.addRow("Similarity Threshold:", self._similarity_spin)
-        layout.addWidget(grp_thresh)
-
-        grp_actions = QGroupBox("Actions")
-        f_actions = QVBoxLayout(grp_actions)
-        self._btn_analyze = QPushButton("▶  Analyze")
-        self._btn_analyze.setObjectName("primary_btn")
-        self._btn_analyze.clicked.connect(self.analyze_requested.emit)
-        self._btn_stop = QPushButton("■  Stop")
-        self._btn_stop.setObjectName("danger_btn")
-        self._btn_stop.setEnabled(False)
-        self._btn_stop.clicked.connect(self.stop_requested.emit)
-        self._btn_generate = QPushButton("🖼  Generate Mosaic")
-        self._btn_generate.setObjectName("success_btn")
-        self._btn_generate.setEnabled(False)
-        self._btn_generate.clicked.connect(self.generate_requested.emit)
-        f_actions.addWidget(self._btn_analyze)
-        f_actions.addWidget(self._btn_stop)
-        f_actions.addWidget(self._btn_generate)
-        layout.addWidget(grp_actions)
-        layout.addStretch()
-        scroll.setWidget(container)
-        outer.addWidget(scroll)
-
-        widgets = [
-            self._folder_edit, self._model_edit, self._mmproj_edit, self._gpu_spin, self._ctx_spin,
-            self._threads_spin, self._batch_threads_spin, self._detector_model_edit,
-            self._detector_conf_spin, self._target_combo, self._padding_spin, self._canvas_w_spin,
-            self._canvas_h_spin, self._min_w_spin, self._min_h_spin, self._similarity_spin,
-            self._req_face_only, self._req_full_body, self._req_front, self._req_side, self._req_back,
-            self._req_male, self._req_female, self._req_face_visible, self._req_body_visible,
-            self._req_nsfw, self._req_exclude_blurry, self._req_exclude_occluded,
-            self._req_min_quality, self._req_min_visibility, self._pref_face_only,
-            self._pref_full_body, self._pref_front, self._pref_side, self._pref_back,
-            self._pref_solo, self._pref_face_visible, self._pref_body_visible,
+            self._min_w_spin, self._min_h_spin, self._similarity_spin,
         ]
-        for widget in widgets:
-            if isinstance(widget, QLineEdit):
-                signal = widget.textChanged
-            elif isinstance(widget, QComboBox):
-                signal = widget.currentIndexChanged
-            elif isinstance(widget, QCheckBox):
-                signal = widget.stateChanged
-            else:
-                signal = widget.valueChanged
-            signal.connect(self._on_changed)
 
     def _populate(self, s: AppSettings) -> None:
-        self._building = True
         self._folder_edit.setText(s.last_source_folder)
         self._model_edit.setText(s.model_path)
         self._mmproj_edit.setText(s.mmproj_path)
         self._gpu_spin.setValue(s.n_gpu_layers)
         self._ctx_spin.setValue(max(2048, int(s.n_ctx)))
+        self._max_tokens_spin.setValue(max(64, min(4096, int(s.max_tokens)))
         self._threads_spin.setValue(s.n_threads)
         self._batch_threads_spin.setValue(s.n_threads_batch)
         self._n_batch_spin.setValue(s.n_batch)
-        self._n_ubatch_spin.setValue(s.n_ubatch)
+        self._n_ubatch_spin.setValue(min(s.n_ubatch, s.n_batch))
         self._detector_model_edit.setText(s.person_detector_model)
         self._detector_conf_spin.setValue(s.person_detector_confidence)
-        idx = self._target_combo.findData(s.target_images)
-        self._target_combo.setCurrentIndex(max(0, idx if idx >= 0 else self._target_combo.findData(12)))
+        self._target_spin.setValue(max(0, int(s.target_images)))
         self._padding_spin.setValue(s.padding_px)
         self._canvas_w_spin.setValue(s.canvas_width)
         self._canvas_h_spin.setValue(s.canvas_height)
+        self._min_subject_percent_spin.setValue(getattr(s, "min_subject_percent", 10.0))
+        self._target_subject_percent_spin.setValue(max(self._min_subject_percent_spin.value(), getattr(s, "target_subject_percent", 15.0)))
         self._min_w_spin.setValue(s.min_image_width)
         self._min_h_spin.setValue(s.min_image_height)
         self._similarity_spin.setValue(s.phash_threshold)
 
         r = s.mosaic_requirements
-        self._req_face_only.setValue(r.min_face_only)
-        self._req_full_body.setValue(r.min_full_body)
-        self._req_front.setValue(r.min_front)
-        self._req_side.setValue(r.min_side)
-        self._req_back.setValue(r.min_back)
-        self._req_male.setValue(r.min_male)
-        self._req_female.setValue(r.min_female)
-        self._req_face_visible.setValue(r.min_face_visible)
-        self._req_body_visible.setValue(r.min_body_visible)
+        for widget, value in (
+            (self._req_face_only, r.min_face_only), (self._req_full_body, r.min_full_body),
+            (self._req_front, r.min_front), (self._req_side, r.min_side), (self._req_back, r.min_back),
+            (self._req_male, r.min_male), (self._req_female, r.min_female),
+            (self._req_face_visible, r.min_face_visible), (self._req_body_visible, r.min_body_visible),
+        ):
+            widget.setValue(value)
         idx = self._req_nsfw.findData(r.nsfw_policy)
         self._req_nsfw.setCurrentIndex(max(0, idx))
         self._req_exclude_blurry.setChecked(r.exclude_blurry)
         self._req_exclude_occluded.setChecked(r.exclude_occluded)
         self._req_min_quality.setValue(r.min_quality)
         self._req_min_visibility.setValue(r.min_person_visibility)
-        self._pref_face_only.setChecked(r.prefer_face_only)
-        self._pref_full_body.setChecked(r.prefer_full_body)
-        self._pref_front.setChecked(r.prefer_front)
-        self._pref_side.setChecked(r.prefer_side)
-        self._pref_back.setChecked(r.prefer_back)
-        self._pref_solo.setChecked(r.prefer_solo)
-        self._pref_face_visible.setChecked(r.prefer_face_visible)
-        self._pref_body_visible.setChecked(r.prefer_body_visible)
-        self._building = False
+        for widget, value in (
+            (self._pref_face_only, r.prefer_face_only), (self._pref_full_body, r.prefer_full_body),
+            (self._pref_front, r.prefer_front), (self._pref_side, r.prefer_side),
+            (self._pref_back, r.prefer_back), (self._pref_solo, r.prefer_solo),
+            (self._pref_face_visible, r.prefer_face_visible), (self._pref_body_visible, r.prefer_body_visible),
+        ):
+            widget.setChecked(value)
+
+        for widget in self._all_settings_widgets():
+            self._connect_settings_widget(widget)
 
     def current_settings(self) -> AppSettings:
         s = self._settings
@@ -313,16 +366,19 @@ class SettingsPanel(QWidget):
         s.mmproj_path = self._mmproj_edit.text().strip()
         s.n_gpu_layers = self._gpu_spin.value()
         s.n_ctx = max(2048, self._ctx_spin.value())
+        s.max_tokens = self._max_tokens_spin.value()
         s.n_threads = self._threads_spin.value()
         s.n_threads_batch = self._batch_threads_spin.value()
         s.n_batch = self._n_batch_spin.value()
         s.n_ubatch = min(self._n_ubatch_spin.value(), self._n_batch_spin.value())
         s.person_detector_model = self._detector_model_edit.text().strip()
         s.person_detector_confidence = self._detector_conf_spin.value()
-        s.target_images = self._target_combo.currentData()
+        s.target_images = self._target_spin.value()
         s.padding_px = self._padding_spin.value()
         s.canvas_width = self._canvas_w_spin.value()
         s.canvas_height = self._canvas_h_spin.value()
+        s.min_subject_percent = self._min_subject_percent_spin.value()
+        s.target_subject_percent = max(s.min_subject_percent, self._target_subject_percent_spin.value())
         s.min_image_width = self._min_w_spin.value()
         s.min_image_height = self._min_h_spin.value()
         s.phash_threshold = self._similarity_spin.value()
@@ -352,38 +408,49 @@ class SettingsPanel(QWidget):
         r.prefer_body_visible = self._pref_body_visible.isChecked()
         return s
 
-    def set_analyzing(self, active: bool) -> None:
-        self._btn_analyze.setEnabled(not active)
-        self._btn_stop.setEnabled(active)
-
-    def set_generate_enabled(self, enabled: bool) -> None:
-        self._btn_generate.setEnabled(enabled)
-
-    def _on_changed(self, *_) -> None:
+    def _on_changed(self, *_args) -> None:
         if not self._building:
             self.settings_changed.emit(self.current_settings())
 
-    def _browse_folder(self) -> None:
-        current = self._folder_edit.text().strip()
-        start = current if current and os.path.isdir(current) else os.path.expanduser("~")
-        folder = QFileDialog.getExistingDirectory(self, "Select Image Folder", start)
-        if folder:
-            self._folder_edit.setText(folder)
+    # ---------------------------------------------------------- state API
+    def set_source_folder(self, folder: str) -> None:
+        self._building = True
+        self._folder_edit.setText(folder)
+        self._building = False
 
+    def set_analyzing(self, active: bool) -> None:
+        self._btn_open_folder.setEnabled(not active)
+        self._btn_analyze.setEnabled(not active)
+        self._btn_stop.setEnabled(active)
+        self._btn_generate.setEnabled(False if active else self._btn_generate.isEnabled())
+
+    def set_generate_enabled(self, enabled: bool) -> None:
+        self._btn_generate.setEnabled(bool(enabled))
+
+    def set_preview_enabled(self, enabled: bool) -> None:
+        self._btn_preview.setEnabled(bool(enabled))
+
+    def set_export_mosaic_enabled(self, enabled: bool) -> None:
+        self._btn_export_mosaic.setEnabled(bool(enabled))
+
+    # --------------------------------------------------------------- browse
     def _browse_model(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
         start = os.path.dirname(self._model_edit.text()) or os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(self, "Select GGUF Model", start, "GGUF Models (*.gguf);;All Files (*)")
         if path:
             self._model_edit.setText(path)
 
     def _browse_mmproj(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
         start = os.path.dirname(self._mmproj_edit.text()) or os.path.expanduser("~")
         path, _ = QFileDialog.getOpenFileName(self, "Select mmproj File", start, "GGUF Files (*.gguf);;All Files (*)")
         if path:
             self._mmproj_edit.setText(path)
 
     def _browse_detector_model(self) -> None:
+        from PySide6.QtWidgets import QFileDialog
         start = os.path.dirname(self._detector_model_edit.text()) or os.path.expanduser("~")
-        path, _ = QFileDialog.getOpenFileName(self, "Select YOLO Model", start, "Model Files (*.pt *.onnx);;All Files (*)")
+        path, _ = QFileDialog.getOpenFileName(self, "Select Person Detector", start, "Model Files (*.pt *.onnx);;All Files (*)")
         if path:
             self._detector_model_edit.setText(path)

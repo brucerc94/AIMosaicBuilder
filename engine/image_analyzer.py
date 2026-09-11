@@ -329,6 +329,15 @@ class AnalysisPipeline:
             results.append(record)
             self._emit_progress(idx + 1, total, record)
 
+        processed_paths = {record.path for record in results}
+        if len(results) < total:
+            remaining = [path for path in paths if path not in processed_paths]
+            results.extend(build_record(path) for path in remaining)
+            logger.info(
+                "[analyzer] Preserved %d pending image(s) after cancellation",
+                len(remaining),
+            )
+
         run_elapsed = time.perf_counter() - run_started
         avg_inference = self._inference_seconds / self._n_cache_misses if self._n_cache_misses else 0.0
         logger.info(

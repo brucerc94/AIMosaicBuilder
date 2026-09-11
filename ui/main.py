@@ -43,7 +43,7 @@ class MainWindow(QMainWindow):
 
         self._records: list[ImageRecord] = []
         self._paths: list[str] = []
-        self._excluded_folders: list[str] = []
+        self._excluded_folders: list[str] = load_excluded_folders(self._settings.last_source_folder) if self._settings.last_source_folder and Path(self._settings.last_source_folder).is_dir() else []
         self._loader = None
         self._analysis_worker = None
         self._post_worker = None

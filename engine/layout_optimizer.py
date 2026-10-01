@@ -550,7 +550,7 @@ def _build_rows_partitioned(
     # Keep several non-dominated alternatives per state. Keeping only the
     # highest current height can hide a lower-height prefix that is necessary
     # to fit the remaining rows inside the canvas.
-    state_limit = 8
+    state_limit = 1000000 if n <= 20 else 8
     states: dict[tuple[int, int], list[tuple[float, float, list[_Row]]]] = {
         (0, 0): [(0.0, 0.0, [])]
     }

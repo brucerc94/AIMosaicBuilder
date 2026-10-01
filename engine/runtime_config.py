@@ -6,6 +6,13 @@ from typing import Any
 
 _DEFAULT_MAX_TOKENS = 576
 
+def _coerce_max_tokens(value: Any) -> int:
+    try:
+        return max(64, min(4096, int(value)))
+    except (TypeError, ValueError):
+        return _DEFAULT_MAX_TOKENS
+
+
 def configure_vision_engine(engine: Any, settings: Any) -> None:
     """Bind persisted UI settings to the existing runtime components."""
     engine._aimosaic_max_tokens = _coerce_max_tokens(

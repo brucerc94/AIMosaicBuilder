@@ -427,105 +427,42 @@ def apply_diversity_filter(
     phash_threshold: int = 10,
     requirements: Optional[MosaicRequirements] = None,
 ) -> list[ImageRecord]:
+    """Compatibility wrapper around the single canonical mosaic selector."""
+    from engine.layout_optimizer import _candidate_order, _select_target_set
+
     requirements = requirements or MosaicRequirements()
     for record in records:
         if record.status == ImageStatus.SELECTED:
             record.status = ImageStatus.ANALYZED
 
-    candidates = [
-        record for record in records
-        if record.ranking
-        and record.ranking.final_score > 0
-        and record.detections
-        and not record.manually_excluded
-        and _hard_eligible(record, requirements)
-    ]
+    candidates = _candidate_order(records, requirements)
+    target = max(0, int(target))
     if target <= 0:
         return records
 
-    candidates.sort(
-        key=lambda r: (
-            -(r.ranking.final_score if r.ranking else 0.0),
-            r.filename.lower(),
-        )
-    )
-
-    selected: list[ImageRecord] = []
-    unmet: list[str] = []
-
-    requirement_counts = (
-        ("face_only", requirements.min_face_only),
-        ("full_body", requirements.min_full_body),
-        ("front", requirements.min_front),
-        ("side", requirements.min_side),
-        ("back", requirements.min_back),
-        ("male", requirements.min_male),
-        ("female", requirements.min_female),
-        ("face_visible", requirements.min_face_visible),
-        ("body_visible", requirements.min_body_visible),
-    )
-
-    for name, minimum in requirement_counts:
-        if minimum <= 0:
-            continue
-        for _ in range(minimum):
-            matching = [
-                r for r in candidates
-                if r not in selected
-                and _matches_requirement(r, name)
-            ]
-            if not matching:
-                unmet.append(name)
-                break
-            best = max(
-                matching,
-                key=lambda r: (
-                    _diversity_adjusted_score(r, selected, phash_threshold),
-                    r.ranking.final_score if r.ranking else 0.0,
-                    r.filename.lower(),
-                ),
-            )
-            best.status = ImageStatus.SELECTED
-            selected.append(best)
-            if len(selected) >= target:
-                break
-        if len(selected) >= target:
-            break
-
-    if len(selected) < target:
-        while len(selected) < target:
-            remaining = [record for record in candidates if record not in selected]
-            if not remaining:
-                break
-            best = max(
-                remaining,
-                key=lambda r: (
-                    _diversity_adjusted_score(r, selected, phash_threshold),
-                    r.ranking.final_score if r.ranking else 0.0,
-                    r.filename.lower(),
-                ),
-            )
-            best.status = ImageStatus.SELECTED
-            selected.append(best)
-
+    selected, unmet = _select_target_set(candidates, target, requirements, max(0, int(phash_threshold)))
     selected_paths = {record.path for record in selected}
+
     for record in records:
-        if (
-            record.path not in selected_paths
-            and record.status in {ImageStatus.ANALYZED, ImageStatus.CACHED, ImageStatus.SELECTED}
+        if record.path in selected_paths:
+            record.status = ImageStatus.SELECTED
+        elif (
+            record.status in {ImageStatus.ANALYZED, ImageStatus.CACHED, ImageStatus.SELECTED}
             and record.ranking
             and record.ranking.rank > 0
         ):
             record.status = ImageStatus.REJECTED
 
     if unmet:
-        logger.warning("Mosaic requirements not fully satisfied: %s", ", ".join(unmet))
+        logger.warning("Diversity/requirements selection not fully satisfied: %s", "; ".join(unmet))
     logger.info(
         "Diversity/requirements selection: %d/%d candidates (target=%d, unmet=%s)",
-        len(selected), len(candidates), target, ",".join(unmet) if unmet else "none",
+        len(selected),
+        len(candidates),
+        target,
+        "; ".join(unmet) if unmet else "none",
     )
     return records
-
 
 def auto_target_count(n_valid: int, canvas_w: int = 3840, canvas_h: int = 2160, min_cell_px: int = 300) -> int:
     if n_valid <= 0:

@@ -123,7 +123,29 @@ class PreviewWindow(QDialog):
             zoom = float(record.selection.zoom) if record.selection else 0.5
             width = max(1, int(crop.width * zoom))
             height = max(1, int(crop.height * zoom))
-            position = self._find_position(width, height)
+
+            saved_x = int(getattr(record.selection, "x", -1)) if record.selection else -1
+            saved_y = int(getattr(record.selection, "y", -1)) if record.selection else -1
+            if saved_x >= 0 and saved_y >= 0:
+                position = (saved_x, saved_y)
+                valid_saved_position = (
+                    saved_x + width <= self._canvas_w
+                    and saved_y + height <= self._canvas_h
+                    and not any(
+                        not (
+                            saved_x + width <= ox
+                            or saved_x >= ox + ow
+                            or saved_y + height <= oy
+                            or saved_y >= oy + oh
+                        )
+                        for ox, oy, ow, oh in self._occupied
+                    )
+                )
+                if not valid_saved_position:
+                    position = self._find_position(width, height)
+            else:
+                position = self._find_position(width, height)
+
             if position is None:
                 continue
             x, y = position

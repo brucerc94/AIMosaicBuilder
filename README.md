@@ -131,7 +131,7 @@ Each source folder stores application state under:
 └── session.json
 ```
 
-The cache uses the file SHA-256 as its primary identity and separates analyses by model and Custom Prompt. Failed runtime/model analyses are not treated as reusable successful results.
+The cache uses the file SHA-256 as its primary identity and separates analyses by Custom Prompt. The vision model is stored as metadata and changing models does not invalidate an otherwise valid cached analysis. Failed runtime/model analyses are not treated as reusable successful results.
 
 ## Recommended Model
 

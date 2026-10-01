@@ -637,7 +637,10 @@ def optimize_auto_layout(
     )
     max_target = min(len(candidates), max(0, int(max_images)))
     if max_target <= 0:
-        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, _required_names(requirements), 0.0)
+        unmet = _unmet_requirement_messages(_required_counts(requirements))
+        if not unmet:
+            unmet = ["No eligible images are available for the current filters"]
+        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, unmet, 0.0)
 
     best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [], 0.0)
     last_failure: list[str] = []

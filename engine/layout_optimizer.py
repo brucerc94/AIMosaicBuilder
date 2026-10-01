@@ -484,53 +484,74 @@ def _build_rows(
     return rows
 
 
-def _simulate_exact_viewer(
-    order: list[ImageRecord],
-    zooms: dict[str, float],
+def _evaluate_rows(
+    rows: list[_Row],
     canvas_size: tuple[int, int],
     padding_px: int,
     min_zoom: float,
-    zoom_decay: float,
     min_subject_px: int,
-    target_subject_px: int = 260,
+    target_subject_px: int,
+    gap_px: int = 2,
 ) -> LayoutEvaluation | None:
-    """Run the same placement algorithm used by ImageMosaicView."""
+    """Evaluate the actual row layout against the configured canvas."""
+    del padding_px
     canvas_w, canvas_h = map(int, canvas_size)
-    occupied: list[tuple[int, int, int, int]] = []
-    placements: list[LayoutPlacement] = []
+    if canvas_w <= 0 or canvas_h <= 0 or not rows:
+        return None
 
-    for record in order:
-        crop = _layout_crop(record, padding_px)
-        subject_h = max(1, _best_detection(record).bbox.height)
-        zoom = max(min_zoom, float(zooms.get(
-            record.path,
-            _preferred_zoom(record, max(1, int(target_subject_px)), min_zoom, 3.0),
-        )))
-        placement = None
-        while zoom >= min_zoom - 1e-9:
-            width = max(1, int(crop.width * zoom))
-            height = max(1, int(crop.height * zoom))
-            position = _find_non_overlap_position(canvas_w, canvas_h, width, height, occupied)
-            if position is not None:
-                if int(subject_h * zoom) < min_subject_px:
-                    return None
-                placement = LayoutPlacement(
+    placements: list[LayoutPlacement] = []
+    y = 0.0
+    occupied: list[tuple[int, int, int, int]] = []
+
+    for row_index, row in enumerate(rows):
+        row_height = max(1.0, float(row.height))
+        row_width = max(0.0, float(row.width))
+        if row_width <= 0.0 or row_width > canvas_w + 1.0:
+            return None
+
+        # Center partial rows (typically the final row); full rows naturally start at x=0.
+        x = max(0.0, (canvas_w - row_width) / 2.0)
+        for record in row.records:
+            zoom = max(min_zoom, float(row.zooms.get(record.path, min_zoom)))
+            crop = _layout_crop(record, 0)
+            # Use the exact optimizer crop rather than rebuilding it with padding=0.
+            crop = _layout_crop(record, int(getattr(row, "_padding_px", 0))) if hasattr(row, "_padding_px") else crop
+            width = max(1, int(round(crop.width * zoom)))
+            height = max(1, int(round(crop.height * zoom)))
+            pos_x = int(round(x))
+            pos_y = int(round(y))
+            if pos_x < 0 or pos_y < 0 or pos_x + width > canvas_w or pos_y + height > canvas_h:
+                return None
+            subject_h = max(1, _best_detection(record).bbox.height)
+            if int(subject_h * zoom) < min_subject_px:
+                return None
+            if any(
+                not (
+                    pos_x + width <= ox
+                    or pos_x >= ox + ow
+                    or pos_y + height <= oy
+                    or pos_y >= oy + oh
+                )
+                for ox, oy, ow, oh in occupied
+            ):
+                return None
+            placements.append(
+                LayoutPlacement(
                     record=record,
                     crop_bbox=crop,
                     zoom=round(zoom, 6),
                     width=width,
                     height=height,
-                    x=position[0],
-                    y=position[1],
+                    x=pos_x,
+                    y=pos_y,
                 )
-                break
-            zoom *= zoom_decay
-        if placement is None:
-            return None
-        placements.append(placement)
-        occupied.append((placement.x, placement.y, placement.width, placement.height))
+            )
+            occupied.append((pos_x, pos_y, width, height))
+            x += width + gap_px
 
-    if not placements:
+        y += row_height + (gap_px if row_index < len(rows) - 1 else 0)
+
+    if not placements or y - gap_px > canvas_h + 1.0:
         return None
 
     area = max(1, canvas_w * canvas_h)
@@ -539,27 +560,37 @@ def _simulate_exact_viewer(
     max_y = max(p.y + p.height for p in placements)
     fill = max(0.0, min(1.0, occupied_area / area))
     extent = max(0.0, min(1.0, (max_x / canvas_w) * (max_y / canvas_h)))
-    average_subject = sum(int(_best_detection(p.record).bbox.height * p.zoom) for p in placements) / len(placements)
+    average_subject = sum(
+        int(_best_detection(p.record).bbox.height * p.zoom)
+        for p in placements
+    ) / len(placements)
     target = max(1.0, float(target_subject_px))
     readability = max(0.0, min(1.25, average_subject / target))
     subject_fits = []
     for placement in placements:
-        subject_px = max(1.0, float(_best_detection(placement.record).bbox.height) * placement.zoom)
+        subject_px = max(
+            1.0,
+            float(_best_detection(placement.record).bbox.height) * placement.zoom,
+        )
         relative_error = abs(subject_px - target) / target
         subject_fits.append(1.0 / (1.0 + relative_error))
     target_fit = sum(subject_fits) / len(subject_fits)
 
     return LayoutEvaluation(
         placements=placements,
-        target=len(order),
+        target=len(placements),
         average_zoom=sum(p.zoom for p in placements) / len(placements),
         average_fill_ratio=sum((p.width * p.height) / area for p in placements) / len(placements),
         average_subject_px=average_subject,
         canvas_fill_ratio=fill,
         unmet_requirements=[],
-        layout_score=0.60 * fill + 0.15 * extent + 0.10 * readability + 0.15 * target_fit,
+        layout_score=(
+            0.55 * fill
+            + 0.25 * extent
+            + 0.10 * readability
+            + 0.10 * target_fit
+        ),
     )
-
 
 def _optimize_selected_layout(
     selected: list[ImageRecord],
@@ -587,16 +618,16 @@ def _optimize_selected_layout(
             )
             if rows is None:
                 continue
-            zooms = {path: zoom for row in rows for path, zoom in row.zooms.items()}
-            evaluation = _simulate_exact_viewer(
-                order,
-                zooms,
+            for row in rows:
+                setattr(row, "_padding_px", padding_px)
+            evaluation = _evaluate_rows(
+                rows,
                 canvas_size,
                 padding_px,
                 min_zoom=0.1,
-                zoom_decay=0.9,
                 min_subject_px=min_subject_px,
                 target_subject_px=target_subject_px,
+                gap_px=2,
             )
             if evaluation is None or len(evaluation.placements) != len(order):
                 continue
@@ -813,6 +844,8 @@ def apply_layout_selection(evaluation: LayoutEvaluation, all_records: list[Image
                 padding_px=0,
                 manual_override=record.manually_included,
                 zoom=placement.zoom,
+                x=placement.x,
+                y=placement.y,
             )
         elif record.status == ImageStatus.SELECTED:
             record.status = ImageStatus.REJECTED

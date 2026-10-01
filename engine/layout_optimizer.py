@@ -827,10 +827,11 @@ def _optimize_selected_layout(
 ) -> LayoutEvaluation | None:
     canvas_w, canvas_h = map(int, canvas_size)
     best: LayoutEvaluation | None = None
-    max_rows = min(
-        len(selected),
-        max(1, (canvas_h + 2) // max(1, min_subject_px + 2)),
-    )
+    # The number of usable rows is not safely bounded by Min Subject alone,
+    # because crop height can exceed subject height and rows can still be shorter
+    # than the subject threshold after zooming. Search every row count; _row_for
+    # remains the actual feasibility gate.
+    max_rows = len(selected)
 
     for order in _order_variants(selected, padding_px):
         for desired_rows in range(1, max_rows + 1):

@@ -294,7 +294,7 @@ class GenerateMosaicWorker(QRunnable):
             if not layout.placements:
                 details = ""
                 if layout.unmet_requirements:
-                    details = " " + " ".join(layout.unmet_requirements)
+                    details = " " + "; ".join(layout.unmet_requirements)
                 raise RuntimeError(
                     "Unable to generate the mosaic with the current Target Images, "
                     "Requirements, Similarity, Min Subject, and canvas settings." + details

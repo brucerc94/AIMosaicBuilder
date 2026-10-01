@@ -36,7 +36,6 @@ class MainWindow(QMainWindow):
 
         self._settings = load_settings()
         self._settings_snapshot = copy.deepcopy(self._settings)
-        self._analyzed_custom_prompt: str | None = None
         self._engine = get_vision_engine()
         configure_vision_engine(self._engine, self._settings)
         self._cache = self._get_cache_for_source(self._settings.last_source_folder)
@@ -144,7 +143,6 @@ class MainWindow(QMainWindow):
                 record.status = ImageStatus.ANALYZED
             elif record.status != ImageStatus.ERROR:
                 record.status = ImageStatus.PENDING
-        self._analyzed_custom_prompt = None
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
         self.settings_panel.set_export_mosaic_enabled(False)
@@ -218,8 +216,6 @@ class MainWindow(QMainWindow):
         self._settings.cache_directory = str(source_cache_dir(source))
         save_settings(self._settings)
         self.settings_panel.set_source_folder(str(source))
-        self._analyzed_custom_prompt = None
-
         self._cache = self._get_cache_for_source(str(source))
         self._excluded_folders = load_excluded_folders(str(source))
         self._paths = discover_images(str(source), self._excluded_folders)
@@ -433,7 +429,6 @@ class MainWindow(QMainWindow):
     def _on_post_finished(self, records: list[ImageRecord]) -> None:
         self._post_worker = None
         self._records = records
-        self._analyzed_custom_prompt = self._normalized_prompt(self._settings)
         self.grid.load_records(records)
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))

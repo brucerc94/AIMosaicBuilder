@@ -11,8 +11,6 @@ def configure_vision_engine(engine: Any, settings: Any) -> None:
     engine._aimosaic_max_tokens = _coerce_max_tokens(
         getattr(settings, "max_tokens", _DEFAULT_MAX_TOKENS)
     )
-    _install_layout_target_adapter()
-
     if getattr(engine, "_aimosaic_settings_wrapper_installed", False):
         return
 

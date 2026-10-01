@@ -530,11 +530,10 @@ def _evaluate_rows(
     if canvas_w <= 0 or canvas_h <= 0 or not rows:
         return None
 
-    placements: list[LayoutPlacement] = []
-    occupied: list[tuple[int, int, int, int]] = []
-    y = 0.0
+    prepared_rows: list[tuple[list[tuple[ImageRecord, BoundingBox, float, int, int]], int, int]] = []
+    total_height = 0
 
-    for row_index, row in enumerate(rows):
+    for row in rows:
         actual_sizes: list[tuple[ImageRecord, BoundingBox, float, int, int]] = []
         actual_row_width = gap_px * max(0, len(row.records) - 1)
 
@@ -546,19 +545,34 @@ def _evaluate_rows(
             actual_sizes.append((record, crop, zoom, width, height))
             actual_row_width += width
 
+            subject_h = max(1, _best_detection(record).bbox.height)
+            if int(subject_h * zoom) < min_subject_px:
+                return None
+
         if not actual_sizes or actual_row_width > canvas_w:
             return None
 
-        # Full rows fill the canvas; a partial final row is centered.
+        actual_row_height = max(height for *_rest, height in actual_sizes)
+        prepared_rows.append((actual_sizes, actual_row_width, actual_row_height))
+        total_height += actual_row_height
+
+    total_height += gap_px * max(0, len(prepared_rows) - 1)
+    if total_height > canvas_h:
+        return None
+
+    # Center the complete optimized mosaic inside the configured canvas when
+    # the content does not need all available vertical space.
+    y = max(0.0, (canvas_h - total_height) / 2.0)
+    placements: list[LayoutPlacement] = []
+    occupied: list[tuple[int, int, int, int]] = []
+
+    for row_index, (actual_sizes, actual_row_width, actual_row_height) in enumerate(prepared_rows):
         x = max(0.0, (canvas_w - actual_row_width) / 2.0)
+
         for index, (record, crop, zoom, width, height) in enumerate(actual_sizes):
             pos_x = int(round(x))
             pos_y = int(round(y))
             if pos_x < 0 or pos_y < 0 or pos_x + width > canvas_w or pos_y + height > canvas_h:
-                return None
-
-            subject_h = max(1, _best_detection(record).bbox.height)
-            if int(subject_h * zoom) < min_subject_px:
                 return None
 
             if any(
@@ -588,11 +602,11 @@ def _evaluate_rows(
             if index < len(actual_sizes) - 1:
                 x += gap_px
 
-        y += row.height
-        if row_index < len(rows) - 1:
+        y += actual_row_height
+        if row_index < len(prepared_rows) - 1:
             y += gap_px
 
-    if not placements or y > canvas_h + 1.0:
+    if not placements:
         return None
 
     area = max(1, canvas_w * canvas_h)

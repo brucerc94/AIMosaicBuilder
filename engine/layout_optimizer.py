@@ -640,13 +640,13 @@ def optimize_auto_layout(
         return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, _required_names(requirements), 0.0)
 
     best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [], 0.0)
-    first_failure: list[str] = []
+    last_failure: list[str] = []
 
     for target in _target_values(max_target):
         selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
         if len(selected) != target or unmet:
-            if not first_failure and unmet:
-                first_failure = list(unmet)
+            if unmet:
+                last_failure = list(unmet)
             continue
         evaluation = _optimize_selected_layout(
             selected,
@@ -657,10 +657,9 @@ def optimize_auto_layout(
             max_zoom,
         )
         if evaluation is None:
-            if not first_failure:
-                first_failure = [
-                    f"Target Images={target}: layout cannot satisfy Min Subject in the current canvas"
-                ]
+            last_failure = [
+                f"Target Images={target}: layout cannot satisfy Min Subject in the current canvas"
+            ]
             continue
         if evaluation.layout_score > best.layout_score + 1e-9 or (
             abs(evaluation.layout_score - best.layout_score) <= 0.015
@@ -668,8 +667,8 @@ def optimize_auto_layout(
         ):
             best = evaluation
 
-    if not best.placements and first_failure:
-        best.unmet_requirements = first_failure
+    if not best.placements and last_failure:
+        best.unmet_requirements = last_failure
 
     logger.info(
         "AUTO layout: selected=%d/%d max=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx score=%.3f unmet=%s",

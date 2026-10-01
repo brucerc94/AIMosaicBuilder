@@ -902,6 +902,98 @@ def optimize_auto_layout(
     return best
 
 
+def _layout_proxy(record: ImageRecord, padding_px: int, min_subject_px: int) -> float:
+    """Approximate how much row height this image needs to satisfy Min Subject."""
+    crop = _layout_crop(record, padding_px)
+    subject_h = max(1, _best_detection(record).bbox.height)
+    return max(
+        0.1 * crop.height,
+        min_subject_px * crop.height / float(subject_h),
+    )
+
+
+def _try_layout_selection_repair(
+    selected: list[ImageRecord],
+    candidates: list[ImageRecord],
+    target: int,
+    requirements: MosaicRequirements,
+    phash_threshold: int,
+    canvas_size: tuple[int, int],
+    padding_px: int,
+    min_subject_px: int,
+    target_subject_px: int,
+    max_zoom: float,
+) -> LayoutEvaluation | None:
+    """Try bounded one-for-one selection repairs when the first exact set cannot fit."""
+    if len(selected) != target:
+        return None
+
+    removable = [
+        record
+        for record in selected
+        if not record.manually_included
+    ]
+    if not removable:
+        return None
+
+    replacement_pool = [
+        record
+        for record in candidates
+        if record not in selected
+    ]
+    if not replacement_pool:
+        return None
+
+    removable.sort(
+        key=lambda record: (
+            -_layout_proxy(record, padding_px, min_subject_px),
+            record.ranking.final_score if record.ranking else 0.0,
+        )
+    )
+    replacement_pool.sort(
+        key=lambda record: (
+            _layout_proxy(record, padding_px, min_subject_px),
+            -(record.ranking.final_score if record.ranking else 0.0),
+            record.filename.lower(),
+        )
+    )
+
+    # Keep the recovery bounded: this path runs only after the normal layout
+    # search failed, and it should not turn every Generate operation into a
+    # combinatorial search.
+    removable = removable[: min(6, len(removable))]
+    replacement_pool = replacement_pool[: min(16, len(replacement_pool))]
+
+    best: LayoutEvaluation | None = None
+    for remove in removable:
+        base = [record for record in selected if record is not remove]
+        for add in replacement_pool:
+            if add in base:
+                continue
+            if _too_similar(add, base, phash_threshold):
+                continue
+
+            trial = base + [add]
+            if _requirement_deficits(trial, requirements):
+                continue
+
+            evaluation = _optimize_selected_layout(
+                trial,
+                canvas_size,
+                padding_px,
+                min_subject_px,
+                target_subject_px,
+                max_zoom,
+            )
+            if evaluation is None or len(evaluation.placements) != target:
+                continue
+
+            if best is None or evaluation.layout_score > best.layout_score + 1e-9:
+                best = evaluation
+
+    return best
+
+
 def optimize_fixed_layout(
     records: list[ImageRecord],
     target: int,
@@ -925,7 +1017,16 @@ def optimize_fixed_layout(
     )
     target = int(target)
     if target <= 0:
-        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, ["Target Images must be greater than 0 in Fixed mode"], 0.0)
+        return LayoutEvaluation(
+            [],
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            ["Target Images must be greater than 0 in Fixed mode"],
+            0.0,
+        )
     if target > len(candidates):
         return LayoutEvaluation(
             [],
@@ -937,6 +1038,7 @@ def optimize_fixed_layout(
             [f"Target Images: requested {target}, only {len(candidates)} eligible images"],
             0.0,
         )
+
     selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
     if len(selected) != target or unmet:
         return LayoutEvaluation(
@@ -949,10 +1051,53 @@ def optimize_fixed_layout(
             unmet or [f"Target Images: could not select exactly {target} images"],
             0.0,
         )
-    evaluation = _optimize_selected_layout(selected, canvas_size, padding_px, min_subject_px, target_subject_px, max_zoom)
+
+    evaluation = _optimize_selected_layout(
+        selected,
+        canvas_size,
+        padding_px,
+        min_subject_px,
+        target_subject_px,
+        max_zoom,
+    )
+
+    if evaluation is None:
+        logger.warning(
+            "FIXED layout: initial selection could not place all %d requested images; "
+            "trying bounded layout-aware selection repair",
+            target,
+        )
+        repaired = _try_layout_selection_repair(
+            selected=selected,
+            candidates=candidates,
+            target=target,
+            requirements=requirements,
+            phash_threshold=phash_threshold,
+            canvas_size=canvas_size,
+            padding_px=padding_px,
+            min_subject_px=min_subject_px,
+            target_subject_px=target_subject_px,
+            max_zoom=max_zoom,
+        )
+        if repaired is not None:
+            evaluation = repaired
+            selected = [placement.record for placement in repaired.placements]
+
     if evaluation is None:
         logger.warning("FIXED layout: could not place all %d requested images", target)
-        return LayoutEvaluation([], target, 0.0, 0.0, 0.0, 0.0, unmet + ["layout_capacity"], 0.0)
+        return LayoutEvaluation(
+            [],
+            target,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            unmet + [
+                f"Target Images={target}: no canvas-fitting layout found with the current Min Subject and image set",
+            ],
+            0.0,
+        )
+
     evaluation.unmet_requirements = unmet
     logger.info(
         "FIXED layout: selected=%d target=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx unmet=%s",
@@ -962,7 +1107,6 @@ def optimize_fixed_layout(
         ",".join(unmet) if unmet else "none",
     )
     return evaluation
-
 
 def simulate_viewer_layout(
     records: list[ImageRecord],

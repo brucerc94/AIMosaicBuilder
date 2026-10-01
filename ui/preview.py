@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage, QPainter, QPixmap
+from PySide6.QtGui import QBrush, QImage, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QDialog, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QPushButton, QToolBar, QVBoxLayout, QWidget
 
 from engine.models import ImageRecord, ImageStatus
@@ -18,6 +18,7 @@ class MosaicGraphicsView(QGraphicsView):
         super().__init__(parent)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
+        self.setBackgroundBrush(QBrush(Qt.darkGray))
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(Qt.black)
@@ -70,7 +71,14 @@ class PreviewWindow(QDialog):
         self._view = MosaicGraphicsView()
         self._scene = QGraphicsScene(self)
         self._scene.setSceneRect(0, 0, self._canvas_w, self._canvas_h)
-        self._scene.setBackgroundBrush(Qt.black)
+        self._scene.setBackgroundBrush(QBrush(Qt.black))
+        self._scene.addRect(
+            0,
+            0,
+            self._canvas_w,
+            self._canvas_h,
+            QPen(Qt.lightGray, 2),
+        )
         self._view.setScene(self._scene)
         root.addWidget(self._view, 1)
 

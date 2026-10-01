@@ -493,38 +493,42 @@ def _evaluate_rows(
     target_subject_px: int,
     gap_px: int = 2,
 ) -> LayoutEvaluation | None:
-    """Evaluate the actual row layout against the configured canvas."""
-    del padding_px
+    """Evaluate the exact row geometry against the configured canvas."""
     canvas_w, canvas_h = map(int, canvas_size)
     if canvas_w <= 0 or canvas_h <= 0 or not rows:
         return None
 
     placements: list[LayoutPlacement] = []
-    y = 0.0
     occupied: list[tuple[int, int, int, int]] = []
+    y = 0.0
 
     for row_index, row in enumerate(rows):
-        row_height = max(1.0, float(row.height))
-        row_width = max(0.0, float(row.width))
-        if row_width <= 0.0 or row_width > canvas_w + 1.0:
-            return None
+        actual_sizes: list[tuple[ImageRecord, BoundingBox, float, int, int]] = []
+        actual_row_width = gap_px * max(0, len(row.records) - 1)
 
-        # Center partial rows (typically the final row); full rows naturally start at x=0.
-        x = max(0.0, (canvas_w - row_width) / 2.0)
         for record in row.records:
             zoom = max(min_zoom, float(row.zooms.get(record.path, min_zoom)))
-            crop = _layout_crop(record, 0)
-            # Use the exact optimizer crop rather than rebuilding it with padding=0.
-            crop = _layout_crop(record, int(getattr(row, "_padding_px", 0))) if hasattr(row, "_padding_px") else crop
+            crop = _layout_crop(record, padding_px)
             width = max(1, int(round(crop.width * zoom)))
             height = max(1, int(round(crop.height * zoom)))
+            actual_sizes.append((record, crop, zoom, width, height))
+            actual_row_width += width
+
+        if not actual_sizes or actual_row_width > canvas_w:
+            return None
+
+        # Full rows fill the canvas; a partial final row is centered.
+        x = max(0.0, (canvas_w - actual_row_width) / 2.0)
+        for index, (record, crop, zoom, width, height) in enumerate(actual_sizes):
             pos_x = int(round(x))
             pos_y = int(round(y))
             if pos_x < 0 or pos_y < 0 or pos_x + width > canvas_w or pos_y + height > canvas_h:
                 return None
+
             subject_h = max(1, _best_detection(record).bbox.height)
             if int(subject_h * zoom) < min_subject_px:
                 return None
+
             if any(
                 not (
                     pos_x + width <= ox
@@ -535,6 +539,7 @@ def _evaluate_rows(
                 for ox, oy, ow, oh in occupied
             ):
                 return None
+
             placements.append(
                 LayoutPlacement(
                     record=record,
@@ -547,11 +552,15 @@ def _evaluate_rows(
                 )
             )
             occupied.append((pos_x, pos_y, width, height))
-            x += width + gap_px
+            x += width
+            if index < len(actual_sizes) - 1:
+                x += gap_px
 
-        y += row_height + (gap_px if row_index < len(rows) - 1 else 0)
+        y += row.height
+        if row_index < len(rows) - 1:
+            y += gap_px
 
-    if not placements or y - gap_px > canvas_h + 1.0:
+    if not placements or y > canvas_h + 1.0:
         return None
 
     area = max(1, canvas_w * canvas_h)
@@ -560,6 +569,7 @@ def _evaluate_rows(
     max_y = max(p.y + p.height for p in placements)
     fill = max(0.0, min(1.0, occupied_area / area))
     extent = max(0.0, min(1.0, (max_x / canvas_w) * (max_y / canvas_h)))
+
     average_subject = sum(
         int(_best_detection(p.record).bbox.height * p.zoom)
         for p in placements
@@ -618,8 +628,6 @@ def _optimize_selected_layout(
             )
             if rows is None:
                 continue
-            for row in rows:
-                setattr(row, "_padding_px", padding_px)
             evaluation = _evaluate_rows(
                 rows,
                 canvas_size,

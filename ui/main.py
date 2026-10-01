@@ -35,6 +35,8 @@ class MainWindow(QMainWindow):
         self.resize(1500, 900)
 
         self._settings = load_settings()
+        self._settings_snapshot = copy.deepcopy(self._settings)
+        self._analyzed_custom_prompt: str | None = None
         self._engine = get_vision_engine()
         configure_vision_engine(self._engine, self._settings)
         self._cache = self._get_cache_for_source(self._settings.last_source_folder)
@@ -101,12 +103,96 @@ class MainWindow(QMainWindow):
         self.details.include_toggled.connect(self._toggle_include)
         self.details.exclude_toggled.connect(self._toggle_exclude)
 
+    @staticmethod
+    def _normalized_prompt(settings) -> str:
+        return str(getattr(settings, "custom_prompt", "") or "").strip()[:2000]
+
+    @staticmethod
+    def _layout_settings_changed(old, new) -> bool:
+        return (
+            any(
+                getattr(old, name) != getattr(new, name)
+                for name in (
+                    "target_images",
+                    "canvas_width",
+                    "canvas_height",
+                    "padding_px",
+                    "min_subject_percent",
+                    "target_subject_percent",
+                    "phash_threshold",
+                )
+            )
+            or old.mosaic_requirements != new.mosaic_requirements
+            or old.ranking_weights != new.ranking_weights
+            or float(getattr(old, "custom_prompt_weight", 30.0))
+            != float(getattr(new, "custom_prompt_weight", 30.0))
+        )
+
+    def _clear_generated_layout_state(self) -> None:
+        for record in self._records:
+            if record.status == ImageStatus.SELECTED or record.selection is not None:
+                record.status = ImageStatus.ANALYZED if record.analysis else ImageStatus.PENDING
+                record.selection = None
+
+    def _invalidate_analysis_state(self, reason: str, clear_detections: bool = False) -> None:
+        for record in self._records:
+            if clear_detections:
+                record.detections = []
+            record.ranking = None
+            record.selection = None
+            if record.analysis:
+                record.status = ImageStatus.ANALYZED
+            elif record.status != ImageStatus.ERROR:
+                record.status = ImageStatus.PENDING
+        self._analyzed_custom_prompt = None
+        self.settings_panel.set_generate_enabled(False)
+        self.settings_panel.set_preview_enabled(False)
+        self.settings_panel.set_export_mosaic_enabled(False)
+        self.grid.load_records(self._records)
+        self._summary.setText(reason)
+
     def _settings_changed(self, settings) -> None:
+        old = self._settings_snapshot
+        prompt_changed = self._normalized_prompt(old) != self._normalized_prompt(settings)
+        detector_changed = (
+            str(getattr(old, "person_detector_model", "")) != str(getattr(settings, "person_detector_model", ""))
+            or float(getattr(old, "person_detector_confidence", 0.25))
+            != float(getattr(settings, "person_detector_confidence", 0.25))
+        )
+        image_size_filter_changed = (
+            int(getattr(old, "min_image_width", 0)) != int(getattr(settings, "min_image_width", 0))
+            or int(getattr(old, "min_image_height", 0)) != int(getattr(settings, "min_image_height", 0))
+        )
+        layout_changed = self._layout_settings_changed(old, settings)
+
         self._settings = settings
         configure_vision_engine(self._engine, self._settings)
         if settings.last_source_folder:
             self._cache = self._get_cache_for_source(settings.last_source_folder)
+
+        if prompt_changed:
+            self._invalidate_analysis_state(
+                "Custom Prompt changed — run Analyze to apply the new request.",
+                clear_detections=False,
+            )
+        elif detector_changed:
+            self._invalidate_analysis_state(
+                "Person detector settings changed — run Analyze to refresh detections.",
+                clear_detections=True,
+            )
+        elif image_size_filter_changed:
+            self._invalidate_analysis_state(
+                "Minimum image dimensions changed — run Analyze to apply the new filter.",
+                clear_detections=False,
+            )
+        elif layout_changed and self._records:
+            self._clear_generated_layout_state()
+            self._rerank_without_detection()
+            self.settings_panel.set_preview_enabled(False)
+            self.settings_panel.set_export_mosaic_enabled(False)
+
         save_settings(settings)
+        self._settings_snapshot = copy.deepcopy(settings)
 
     def _open_folder(self) -> None:
         """Load a source folder and cached analysis without loading/invoking the model."""

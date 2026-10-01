@@ -4,7 +4,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QBrush, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QImage, QPainter, QPixmap
 from PySide6.QtWidgets import QDialog, QGraphicsPixmapItem, QGraphicsScene, QGraphicsView, QHBoxLayout, QPushButton, QToolBar, QVBoxLayout, QWidget
 
 from engine.models import ImageRecord, ImageStatus
@@ -18,7 +18,6 @@ class MosaicGraphicsView(QGraphicsView):
         super().__init__(parent)
         self.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
         self.setDragMode(QGraphicsView.ScrollHandDrag)
-        self.setBackgroundBrush(QBrush(Qt.darkGray))
         self.setTransformationAnchor(QGraphicsView.AnchorUnderMouse)
         self.setResizeAnchor(QGraphicsView.AnchorViewCenter)
         self.setBackgroundBrush(Qt.black)
@@ -71,14 +70,7 @@ class PreviewWindow(QDialog):
         self._view = MosaicGraphicsView()
         self._scene = QGraphicsScene(self)
         self._scene.setSceneRect(0, 0, self._canvas_w, self._canvas_h)
-        self._scene.setBackgroundBrush(QBrush(Qt.black))
-        self._scene.addRect(
-            0,
-            0,
-            self._canvas_w,
-            self._canvas_h,
-            QPen(Qt.lightGray, 2),
-        )
+        self._scene.setBackgroundBrush(Qt.black)
         self._view.setScene(self._scene)
         root.addWidget(self._view, 1)
 
@@ -132,27 +124,7 @@ class PreviewWindow(QDialog):
             width = max(1, int(crop.width * zoom))
             height = max(1, int(crop.height * zoom))
 
-            saved_x = int(getattr(record.selection, "x", -1)) if record.selection else -1
-            saved_y = int(getattr(record.selection, "y", -1)) if record.selection else -1
-            if saved_x >= 0 and saved_y >= 0:
-                position = (saved_x, saved_y)
-                valid_saved_position = (
-                    saved_x + width <= self._canvas_w
-                    and saved_y + height <= self._canvas_h
-                    and not any(
-                        not (
-                            saved_x + width <= ox
-                            or saved_x >= ox + ow
-                            or saved_y + height <= oy
-                            or saved_y >= oy + oh
-                        )
-                        for ox, oy, ow, oh in self._occupied
-                    )
-                )
-                if not valid_saved_position:
-                    position = self._find_position(width, height)
-            else:
-                position = self._find_position(width, height)
+            position = self._find_position(width, height)
 
             if position is None:
                 continue

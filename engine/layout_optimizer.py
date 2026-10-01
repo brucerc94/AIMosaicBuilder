@@ -606,12 +606,8 @@ def _optimize_selected_layout(
 
 
 def _target_values(max_target: int) -> list[int]:
-    values = list(range(1, min(max_target, 20) + 1))
-    if max_target > 20:
-        values.extend(range(22, min(max_target, 60) + 1, 2))
-    if max_target > 60:
-        values.extend(v for v in (70, 80, 90, 100) if v <= max_target)
-    return values
+    """Return every feasible target count; AUTO must not silently skip counts."""
+    return list(range(1, max(0, int(max_target)) + 1))
 
 
 def optimize_auto_layout(

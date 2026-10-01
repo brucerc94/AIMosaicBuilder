@@ -286,7 +286,12 @@ def _refill_selection_after_exclusion(
         and record.detections
         and record.ranking
         and record.ranking.final_score > 0
-        and _hard_eligible(record, requirements)
+        and _hard_eligible(
+            record,
+            requirements,
+            min_image_width=min_image_width,
+            min_image_height=min_image_height,
+        )
     ]
     candidates.sort(
         key=lambda record: (

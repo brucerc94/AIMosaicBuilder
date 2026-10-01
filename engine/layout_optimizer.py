@@ -552,7 +552,7 @@ def _evaluate_rows(
         if not actual_sizes or actual_row_width > canvas_w:
             return None
 
-        actual_row_height = max(height for *_rest, height in actual_sizes)
+        actual_row_height = max(item[4] for item in actual_sizes)
         prepared_rows.append((actual_sizes, actual_row_width, actual_row_height))
         total_height += actual_row_height
 

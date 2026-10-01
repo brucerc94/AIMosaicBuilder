@@ -627,19 +627,30 @@ def optimize_auto_layout(
     min_subject_px: int = 160,
     target_subject_px: int = 260,
     max_zoom: float = 3.0,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
 ) -> LayoutEvaluation:
     """AUTO selects N and per-image zoom using global canvas-aware packing."""
     del initial_zoom
     requirements = requirements or MosaicRequirements()
-    candidates = _candidate_order(records, requirements)
+    candidates = _candidate_order(
+        records,
+        requirements,
+        min_image_width=min_image_width,
+        min_image_height=min_image_height,
+    )
     max_target = min(len(candidates), max(0, int(max_images)))
     if max_target <= 0:
         return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, _required_names(requirements), 0.0)
 
     best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [], 0.0)
+    first_failure: list[str] = []
+
     for target in _target_values(max_target):
         selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
-        if len(selected) != target:
+        if len(selected) != target or unmet:
+            if not first_failure and unmet:
+                first_failure = list(unmet)
             continue
         evaluation = _optimize_selected_layout(
             selected,
@@ -650,13 +661,19 @@ def optimize_auto_layout(
             max_zoom,
         )
         if evaluation is None:
+            if not first_failure:
+                first_failure = [
+                    f"Target Images={target}: layout cannot satisfy Min Subject in the current canvas"
+                ]
             continue
-        evaluation.unmet_requirements = unmet
         if evaluation.layout_score > best.layout_score + 1e-9 or (
             abs(evaluation.layout_score - best.layout_score) <= 0.015
             and len(evaluation.placements) > len(best.placements)
         ):
             best = evaluation
+
+    if not best.placements and first_failure:
+        best.unmet_requirements = first_failure
 
     logger.info(
         "AUTO layout: selected=%d/%d max=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx score=%.3f unmet=%s",

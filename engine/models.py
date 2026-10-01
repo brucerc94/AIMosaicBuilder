@@ -316,6 +316,8 @@ class MosaicSelection:
     padding_px: int = 40
     manual_override: bool = False
     zoom: float = 0.5
+    x: int = -1
+    y: int = -1
 
     def to_dict(self) -> dict:
         return {
@@ -325,6 +327,8 @@ class MosaicSelection:
             "padding_px": self.padding_px,
             "manual_override": self.manual_override,
             "zoom": self.zoom,
+            "x": self.x,
+            "y": self.y,
         }
 
     @classmethod
@@ -337,6 +341,8 @@ class MosaicSelection:
             padding_px=int(d.get("padding_px", 40)),
             manual_override=bool(d.get("manual_override", False)),
             zoom=float(d.get("zoom", 0.5)),
+            x=int(d.get("x", -1)),
+            y=int(d.get("y", -1)),
         )
 
 

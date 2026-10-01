@@ -547,56 +547,70 @@ def _build_rows_partitioned(
             )
         return row_cache[key]
 
-    # (total height, imbalance, rows)
-    states: dict[tuple[int, int], tuple[float, float, list[_Row]]] = {
-        (0, 0): (0.0, 0.0, [])
+    # Keep several non-dominated alternatives per state. Keeping only the
+    # highest current height can hide a lower-height prefix that is necessary
+    # to fit the remaining rows inside the canvas.
+    state_limit = 8
+    states: dict[tuple[int, int], list[tuple[float, float, list[_Row]]]] = {
+        (0, 0): [(0.0, 0.0, [])]
     }
 
     for rows_used in range(1, desired_rows + 1):
         for end in range(rows_used, n + 1):
-            best_state = None
+            candidates_state: list[tuple[float, float, list[_Row]]] = []
+
             for start in range(rows_used - 1, end):
-                previous = states.get((rows_used - 1, start))
-                if previous is None:
+                previous_states = states.get((rows_used - 1, start), [])
+                if not previous_states:
                     continue
 
                 row = get_row(start, end)
                 if row is None:
                     continue
 
-                total_height = previous[0] + row.height
-                if rows_used > 1:
-                    total_height += gap_px
-                if total_height > canvas_h + 1e-6:
-                    continue
+                for previous_total, previous_imbalance, previous_rows in previous_states:
+                    total_height = previous_total + row.height
+                    if rows_used > 1:
+                        total_height += gap_px
+                    if total_height > canvas_h + 1e-6:
+                        continue
 
-                imbalance = previous[1] + abs(row.height - target_height)
-                candidate = (
-                    total_height,
-                    imbalance,
-                    previous[2] + [row],
-                )
-
-                if best_state is None:
-                    best_state = candidate
-                    continue
-
-                best_total, best_imbalance, _ = best_state
-                if (
-                    candidate[0] > best_total + 1e-6
-                    or (
-                        abs(candidate[0] - best_total) <= 1e-6
-                        and candidate[1] < best_imbalance - 1e-6
+                    imbalance = previous_imbalance + abs(row.height - target_height)
+                    candidates_state.append(
+                        (total_height, imbalance, previous_rows + [row])
                     )
-                ):
-                    best_state = candidate
 
-            if best_state is not None:
-                states[(rows_used, end)] = best_state
+            if not candidates_state:
+                continue
 
-    result = states.get((desired_rows, n))
-    return result[2] if result is not None else None
+            # Deduplicate equivalent totals and retain both high-fill and
+            # low-height solutions, with a bias toward balanced row heights.
+            candidates_state.sort(
+                key=lambda item: (-item[0], item[1])
+            )
+            kept: list[tuple[float, float, list[_Row]]] = []
+            seen_totals: set[int] = set()
 
+            for candidate in candidates_state:
+                total_height, imbalance, _rows = candidate
+                total_key = round(total_height * 10.0)
+                if total_key in seen_totals:
+                    continue
+                seen_totals.add(total_key)
+                kept.append(candidate)
+
+                if len(kept) >= state_limit:
+                    break
+
+            states[(rows_used, end)] = kept
+
+    final_states = states.get((desired_rows, n), [])
+    if not final_states:
+        return None
+
+    # Highest usable height fills the canvas best; balance breaks ties.
+    final_states.sort(key=lambda item: (-item[0], item[1]))
+    return final_states[0][2]
 
 def _build_rows(
     order: list[ImageRecord],
@@ -626,11 +640,9 @@ def _build_rows(
         max_zoom,
         min_subject_px,
     )
-    if greedy is not None:
-        return greedy
 
     if len(order) <= 30:
-        return _build_rows_partitioned(
+        partitioned = _build_rows_partitioned(
             order,
             canvas_w,
             canvas_h,
@@ -641,7 +653,35 @@ def _build_rows(
             max_zoom,
             min_subject_px,
         )
-    return None
+        if greedy is None:
+            return partitioned
+        if partitioned is None:
+            return greedy
+
+        greedy_height = (
+            sum(row.height for row in greedy)
+            + gap_px * max(0, len(greedy) - 1)
+        )
+        partitioned_height = (
+            sum(row.height for row in partitioned)
+            + gap_px * max(0, len(partitioned) - 1)
+        )
+        target_height = canvas_h / max(1, desired_rows)
+
+        greedy_imbalance = sum(abs(row.height - target_height) for row in greedy)
+        partitioned_imbalance = sum(abs(row.height - target_height) for row in partitioned)
+
+        if (
+            partitioned_height > greedy_height + 1e-6
+            or (
+                abs(partitioned_height - greedy_height) <= 1e-6
+                and partitioned_imbalance < greedy_imbalance - 1e-6
+            )
+        ):
+            return partitioned
+        return greedy
+
+    return greedy
 
 
 

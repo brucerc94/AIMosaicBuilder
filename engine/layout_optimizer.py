@@ -692,16 +692,43 @@ def optimize_fixed_layout(
     min_subject_px: int = 160,
     target_subject_px: int = 260,
     max_zoom: float = 3.0,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
 ) -> LayoutEvaluation:
     """Use exactly target images and globally optimize their layout."""
     requirements = requirements or MosaicRequirements()
-    candidates = _candidate_order(records, requirements)
-    target = max(0, min(int(target), len(candidates)))
-    if target == 0:
-        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [], 0.0)
+    candidates = _candidate_order(
+        records,
+        requirements,
+        min_image_width=min_image_width,
+        min_image_height=min_image_height,
+    )
+    target = int(target)
+    if target <= 0:
+        return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, ["Target Images must be greater than 0 in Fixed mode"], 0.0)
+    if target > len(candidates):
+        return LayoutEvaluation(
+            [],
+            target,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            [f"Target Images: requested {target}, only {len(candidates)} eligible images"],
+            0.0,
+        )
     selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
-    if len(selected) != target:
-        return LayoutEvaluation([], target, 0.0, 0.0, 0.0, 0.0, unmet + ["selection_capacity"], 0.0)
+    if len(selected) != target or unmet:
+        return LayoutEvaluation(
+            [],
+            target,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            unmet or [f"Target Images: could not select exactly {target} images"],
+            0.0,
+        )
     evaluation = _optimize_selected_layout(selected, canvas_size, padding_px, min_subject_px, target_subject_px, max_zoom)
     if evaluation is None:
         logger.warning("FIXED layout: could not place all %d requested images", target)

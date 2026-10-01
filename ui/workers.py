@@ -294,8 +294,11 @@ class GenerateMosaicWorker(QRunnable):
             if not layout.placements:
                 details = ""
                 if layout.unmet_requirements:
-                    details = " Unmet requirements: " + ", ".join(layout.unmet_requirements) + "."
-                raise RuntimeError("No layout could fit the requested requirements and canvas." + details)
+                    details = " " + " ".join(layout.unmet_requirements)
+                raise RuntimeError(
+                    "Unable to generate the mosaic with the current Target Images, "
+                    "Requirements, Similarity, Min Subject, and canvas settings." + details
+                )
 
             self.signals.progress.emit("Writing mosaic.json…")
             apply_layout_selection(layout, ranked)

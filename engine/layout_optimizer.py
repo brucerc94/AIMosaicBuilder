@@ -492,6 +492,7 @@ def _simulate_exact_viewer(
     min_zoom: float,
     zoom_decay: float,
     min_subject_px: int,
+    target_subject_px: int = 260,
 ) -> LayoutEvaluation | None:
     """Run the same placement algorithm used by ImageMosaicView."""
     canvas_w, canvas_h = map(int, canvas_size)
@@ -501,7 +502,10 @@ def _simulate_exact_viewer(
     for record in order:
         crop = _layout_crop(record, padding_px)
         subject_h = max(1, _best_detection(record).bbox.height)
-        zoom = max(min_zoom, float(zooms.get(record.path, _preferred_zoom(record, 260, min_zoom, 3.0))))
+        zoom = max(min_zoom, float(zooms.get(
+            record.path,
+            _preferred_zoom(record, max(1, int(target_subject_px)), min_zoom, 3.0),
+        )))
         placement = None
         while zoom >= min_zoom - 1e-9:
             width = max(1, int(crop.width * zoom))
@@ -536,7 +540,14 @@ def _simulate_exact_viewer(
     fill = max(0.0, min(1.0, occupied_area / area))
     extent = max(0.0, min(1.0, (max_x / canvas_w) * (max_y / canvas_h)))
     average_subject = sum(int(_best_detection(p.record).bbox.height * p.zoom) for p in placements) / len(placements)
-    readability = max(0.0, min(1.25, average_subject / 260.0))
+    target = max(1.0, float(target_subject_px))
+    readability = max(0.0, min(1.25, average_subject / target))
+    subject_fits = []
+    for placement in placements:
+        subject_px = max(1.0, float(_best_detection(placement.record).bbox.height) * placement.zoom)
+        relative_error = abs(subject_px - target) / target
+        subject_fits.append(1.0 / (1.0 + relative_error))
+    target_fit = sum(subject_fits) / len(subject_fits)
 
     return LayoutEvaluation(
         placements=placements,
@@ -546,7 +557,7 @@ def _simulate_exact_viewer(
         average_subject_px=average_subject,
         canvas_fill_ratio=fill,
         unmet_requirements=[],
-        layout_score=0.70 * fill + 0.20 * extent + 0.10 * readability,
+        layout_score=0.60 * fill + 0.15 * extent + 0.10 * readability + 0.15 * target_fit,
     )
 
 

@@ -150,6 +150,9 @@ class PostProcessWorker(QRunnable):
                 self._settings.ranking_weights,
                 self._settings.mosaic_requirements,
                 user_request_weight=custom_weight,
+                phash_threshold=self._settings.phash_threshold,
+                min_image_width=self._settings.min_image_width,
+                min_image_height=self._settings.min_image_height,
             )
 
             for record in ranked:
@@ -228,6 +231,9 @@ class GenerateMosaicWorker(QRunnable):
                 self._settings.ranking_weights,
                 requirements,
                 user_request_weight=custom_weight,
+                phash_threshold=self._settings.phash_threshold,
+                min_image_width=self._settings.min_image_width,
+                min_image_height=self._settings.min_image_height,
             )
 
             candidates = [
@@ -269,6 +275,8 @@ class GenerateMosaicWorker(QRunnable):
                 "min_subject_px": min_subject_px,
                 "target_subject_px": target_subject_px,
                 "max_zoom": 3.0,
+                "min_image_width": self._settings.min_image_width,
+                "min_image_height": self._settings.min_image_height,
             }
 
             if target == 0:

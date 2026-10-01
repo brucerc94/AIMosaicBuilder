@@ -503,7 +503,7 @@ class MainWindow(QMainWindow):
     def _rerank_without_detection(self) -> None:
         if not self._records or self._generate_worker or self._export_worker:
             return
-        custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()
+        custom_prompt = self._normalized_prompt(self._settings)
         custom_weight = max(
             0.0,
             min(1.0, float(getattr(self._settings, "custom_prompt_weight", 30.0)) / 100.0),
@@ -513,6 +513,9 @@ class MainWindow(QMainWindow):
             self._settings.ranking_weights,
             self._settings.mosaic_requirements,
             user_request_weight=custom_weight,
+            phash_threshold=self._settings.phash_threshold,
+            min_image_width=self._settings.min_image_width,
+            min_image_height=self._settings.min_image_height,
         )
         self.grid.load_records(self._records)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))
@@ -537,6 +540,7 @@ class MainWindow(QMainWindow):
             self._cache = self._get_cache_for_source(self._settings.last_source_folder)
         save_settings(self._settings)
 
+        self._settings_snapshot = copy.deepcopy(current_settings)
         generation_settings = copy.deepcopy(current_settings)
         requested_target = max(0, int(generation_settings.target_images))
         worker = GenerateMosaicWorker(list(self._records), generation_settings)

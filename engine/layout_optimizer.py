@@ -395,25 +395,207 @@ def _row_for(
     gap_px: int,
     min_zoom: float,
     max_zoom: float,
+    min_subject_px: int = 0,
 ) -> _Row | None:
     if not records:
         return None
+
     crops = [(record, _layout_crop(record, padding_px)) for record in records]
     ratio_sum = sum(crop.width / max(1.0, crop.height) for _, crop in crops)
     if ratio_sum <= 0:
         return None
+
     available = max(1.0, float(canvas_w - gap_px * max(0, len(records) - 1)))
     ideal_height = available / ratio_sum
-    min_height = max(min_zoom * crop.height for _, crop in crops)
-    max_height = min(max_zoom * crop.height for _, crop in crops)
+
+    min_heights = [
+        min_zoom * crop.height
+        for _, crop in crops
+    ]
+    if min_subject_px > 0:
+        min_heights.extend(
+            min_subject_px
+            * crop.height
+            / max(1.0, float(_best_detection(record).bbox.height))
+            for record, crop in crops
+        )
+
+    min_height = max(min_heights, default=min_zoom)
+    max_height = min(
+        max_zoom * crop.height
+        for _, crop in crops
+    )
     if min_height > max_height + 1e-6:
         return None
+
     row_height = max(min_height, min(max_height, ideal_height))
-    zooms = {record.path: row_height / max(1.0, crop.height) for record, crop in crops}
-    width = sum(crop.width * zooms[record.path] for record, crop in crops) + gap_px * max(0, len(records) - 1)
+    zooms = {
+        record.path: row_height / max(1.0, crop.height)
+        for record, crop in crops
+    }
+    width = sum(
+        crop.width * zooms[record.path]
+        for record, crop in crops
+    ) + gap_px * max(0, len(records) - 1)
+
     if width > canvas_w + 1.0:
         return None
+
     return _Row(records, row_height, zooms, width)
+
+
+def _build_rows_greedy(
+    order: list[ImageRecord],
+    canvas_w: int,
+    canvas_h: int,
+    padding_px: int,
+    desired_rows: int,
+    gap_px: int,
+    min_zoom: float,
+    max_zoom: float,
+    min_subject_px: int,
+) -> list[_Row] | None:
+    """Fast row builder used for larger selections."""
+    rows: list[_Row] = []
+    current: list[ImageRecord] = []
+
+    for record in order:
+        trial = current + [record]
+        trial_row = _row_for(
+            trial,
+            canvas_w,
+            padding_px,
+            gap_px,
+            min_zoom,
+            max_zoom,
+            min_subject_px,
+        )
+        if trial_row is None:
+            if not current:
+                return None
+            finalized = _row_for(
+                current,
+                canvas_w,
+                padding_px,
+                gap_px,
+                min_zoom,
+                max_zoom,
+                min_subject_px,
+            )
+            if finalized is None:
+                return None
+            rows.append(finalized)
+            current = [record]
+            continue
+        current = trial
+
+    if current:
+        finalized = _row_for(
+            current,
+            canvas_w,
+            padding_px,
+            gap_px,
+            min_zoom,
+            max_zoom,
+            min_subject_px,
+        )
+        if finalized is None:
+            return None
+        rows.append(finalized)
+
+    if len(rows) != desired_rows:
+        return None
+
+    total_height = sum(row.height for row in rows) + gap_px * max(0, len(rows) - 1)
+    if total_height <= 0 or total_height > canvas_h + 1e-6:
+        return None
+
+    return rows
+
+
+def _build_rows_partitioned(
+    order: list[ImageRecord],
+    canvas_w: int,
+    canvas_h: int,
+    padding_px: int,
+    desired_rows: int,
+    gap_px: int,
+    min_zoom: float,
+    max_zoom: float,
+    min_subject_px: int,
+) -> list[_Row] | None:
+    """Find a contiguous partition into exactly desired_rows that fits the canvas."""
+    n = len(order)
+    desired_rows = max(1, min(int(desired_rows), n))
+    if n == 0:
+        return None
+
+    target_height = canvas_h / desired_rows
+    row_cache: dict[tuple[int, int], _Row | None] = {}
+
+    def get_row(start: int, end: int) -> _Row | None:
+        key = (start, end)
+        if key not in row_cache:
+            row_cache[key] = _row_for(
+                order[start:end],
+                canvas_w,
+                padding_px,
+                gap_px,
+                min_zoom,
+                max_zoom,
+                min_subject_px,
+            )
+        return row_cache[key]
+
+    # (total height, imbalance, rows)
+    states: dict[tuple[int, int], tuple[float, float, list[_Row]]] = {
+        (0, 0): (0.0, 0.0, [])
+    }
+
+    for rows_used in range(1, desired_rows + 1):
+        for end in range(rows_used, n + 1):
+            best_state = None
+            for start in range(rows_used - 1, end):
+                previous = states.get((rows_used - 1, start))
+                if previous is None:
+                    continue
+
+                row = get_row(start, end)
+                if row is None:
+                    continue
+
+                total_height = previous[0] + row.height
+                if rows_used > 1:
+                    total_height += gap_px
+                if total_height > canvas_h + 1e-6:
+                    continue
+
+                imbalance = previous[1] + abs(row.height - target_height)
+                candidate = (
+                    total_height,
+                    imbalance,
+                    previous[2] + [row],
+                )
+
+                if best_state is None:
+                    best_state = candidate
+                    continue
+
+                best_total, best_imbalance, _ = best_state
+                if (
+                    candidate[0] > best_total + 1e-6
+                    or (
+                        abs(candidate[0] - best_total) <= 1e-6
+                        and candidate[1] < best_imbalance - 1e-6
+                    )
+                ):
+                    best_state = candidate
+
+            if best_state is not None:
+                states[(rows_used, end)] = best_state
+
+    result = states.get((desired_rows, n))
+    return result[2] if result is not None else None
 
 
 def _build_rows(
@@ -425,95 +607,42 @@ def _build_rows(
     gap_px: int = 2,
     min_zoom: float = 0.1,
     max_zoom: float = 3.0,
+    min_subject_px: int = 0,
 ) -> list[_Row] | None:
-    """Build justified rows and ensure their combined height fits the canvas."""
-    target_height = canvas_h / max(1, desired_rows)
-    rows: list[_Row] = []
-    current: list[ImageRecord] = []
-
-    for index, record in enumerate(order):
-        trial = current + [record]
-        trial_row = _row_for(trial, canvas_w, padding_px, gap_px, min_zoom, max_zoom)
-        if trial_row is None:
-            if not current:
-                return None
-            finalized = _row_for(current, canvas_w, padding_px, gap_px, min_zoom, max_zoom)
-            if finalized is None:
-                return None
-            rows.append(finalized)
-            current = [record]
-            continue
-
-        current = trial
-        if len(current) > 1 and trial_row.height < target_height * 0.78:
-            last = current.pop()
-            finalized = _row_for(current, canvas_w, padding_px, gap_px, min_zoom, max_zoom)
-            if finalized is None:
-                return None
-            rows.append(finalized)
-            current = [last]
-
-        if index == len(order) - 1:
-            break
-
-    if current:
-        finalized = _row_for(current, canvas_w, padding_px, gap_px, min_zoom, max_zoom)
-        if finalized is None:
-            return None
-        rows.append(finalized)
-
-    total_height = sum(row.height for row in rows)
-    if total_height <= 0:
+    """Build canvas-fitting justified rows with a robust partition fallback."""
+    if not order:
         return None
 
-    if total_height > canvas_h + 1e-6:
-        scale = canvas_h / total_height
-        adjusted: list[_Row] = []
-        for row in rows:
-            zooms = {path: zoom * scale for path, zoom in row.zooms.items()}
-            if any(zoom < min_zoom - 1e-6 for zoom in zooms.values()):
-                return None
-            width = sum(
-                _layout_crop(record, padding_px).width * zooms[record.path]
-                for record in row.records
-            ) + gap_px * max(0, len(row.records) - 1)
-            if width > canvas_w + 1.0:
-                return None
-            adjusted.append(_Row(row.records, row.height * scale, zooms, width))
-        rows = adjusted
-    elif total_height < canvas_h - 1e-6:
-        # Grow the entire layout when there is room. This is important for AUTO:
-        # the configured canvas should drive image scale instead of leaving large
-        # unused margins because the initial row heights were too conservative.
-        total_image_height = total_height
-        width_scale = float("inf")
-        zoom_scale = float("inf")
-        for row in rows:
-            gap_total = gap_px * max(0, len(row.records) - 1)
-            content_width = max(1.0, row.width - gap_total)
-            width_scale = min(
-                width_scale,
-                max(1.0, (canvas_w - gap_total) / content_width),
-            )
-            for zoom in row.zooms.values():
-                if zoom > 0:
-                    zoom_scale = min(zoom_scale, max_zoom / zoom)
+    desired_rows = max(1, min(int(desired_rows), len(order)))
 
-        height_scale = canvas_h / total_image_height
-        scale = min(width_scale, zoom_scale, height_scale)
-        if scale > 1.0 + 1e-6:
-            grown: list[_Row] = []
-            for row in rows:
-                zooms = {path: zoom * scale for path, zoom in row.zooms.items()}
-                width = sum(
-                    _layout_crop(record, padding_px).width * zooms[record.path]
-                    for record in row.records
-                ) + gap_px * max(0, len(row.records) - 1)
-                if any(zoom > max_zoom + 1e-6 for zoom in zooms.values()) or width > canvas_w + 1.0:
-                    return None
-                grown.append(_Row(row.records, row.height * scale, zooms, width))
-            rows = grown
-    return rows
+    greedy = _build_rows_greedy(
+        order,
+        canvas_w,
+        canvas_h,
+        padding_px,
+        desired_rows,
+        gap_px,
+        min_zoom,
+        max_zoom,
+        min_subject_px,
+    )
+    if greedy is not None:
+        return greedy
+
+    if len(order) <= 30:
+        return _build_rows_partitioned(
+            order,
+            canvas_w,
+            canvas_h,
+            padding_px,
+            desired_rows,
+            gap_px,
+            min_zoom,
+            max_zoom,
+            min_subject_px,
+        )
+    return None
+
 
 
 def _evaluate_rows(
@@ -658,7 +787,10 @@ def _optimize_selected_layout(
 ) -> LayoutEvaluation | None:
     canvas_w, canvas_h = map(int, canvas_size)
     best: LayoutEvaluation | None = None
-    max_rows = min(len(selected), max(1, canvas_h // max(80, min_subject_px)))
+    max_rows = min(
+        len(selected),
+        max(1, (canvas_h + 2) // max(1, min_subject_px + 2)),
+    )
 
     for order in _order_variants(selected, padding_px):
         for desired_rows in range(1, max_rows + 1):
@@ -671,6 +803,7 @@ def _optimize_selected_layout(
                 gap_px=2,
                 min_zoom=0.1,
                 max_zoom=max_zoom,
+                min_subject_px=min_subject_px,
             )
             if rows is None:
                 continue

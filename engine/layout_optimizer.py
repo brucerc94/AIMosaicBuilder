@@ -481,6 +481,38 @@ def _build_rows(
                 return None
             adjusted.append(_Row(row.records, row.height * scale, zooms, width))
         rows = adjusted
+    elif total_height < canvas_h - 1e-6:
+        # Grow the entire layout when there is room. This is important for AUTO:
+        # the configured canvas should drive image scale instead of leaving large
+        # unused margins because the initial row heights were too conservative.
+        total_image_height = total_height
+        width_scale = float("inf")
+        zoom_scale = float("inf")
+        for row in rows:
+            gap_total = gap_px * max(0, len(row.records) - 1)
+            content_width = max(1.0, row.width - gap_total)
+            width_scale = min(
+                width_scale,
+                max(1.0, (canvas_w - gap_total) / content_width),
+            )
+            for zoom in row.zooms.values():
+                if zoom > 0:
+                    zoom_scale = min(zoom_scale, max_zoom / zoom)
+
+        height_scale = canvas_h / total_image_height
+        scale = min(width_scale, zoom_scale, height_scale)
+        if scale > 1.0 + 1e-6:
+            grown: list[_Row] = []
+            for row in rows:
+                zooms = {path: zoom * scale for path, zoom in row.zooms.items()}
+                width = sum(
+                    _layout_crop(record, padding_px).width * zooms[record.path]
+                    for record in row.records
+                ) + gap_px * max(0, len(row.records) - 1)
+                if any(zoom > max_zoom + 1e-6 for zoom in zooms.values()) or width > canvas_w + 1.0:
+                    return None
+                grown.append(_Row(row.records, row.height * scale, zooms, width))
+            rows = grown
     return rows
 
 

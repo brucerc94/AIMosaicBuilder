@@ -21,9 +21,20 @@ def _tags(record: ImageRecord) -> dict:
     return record.analysis.visual_tags if record.analysis else {}
 
 
-def _hard_eligible(record: ImageRecord, requirements: MosaicRequirements) -> bool:
+def _hard_eligible(
+    record: ImageRecord,
+    requirements: MosaicRequirements,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
+) -> bool:
     analysis = record.analysis
     if not analysis or not analysis.has_person or record.manually_excluded:
+        return False
+    min_width = max(0, int(min_image_width))
+    min_height = max(0, int(min_image_height))
+    if min_width > 0 and record.width < min_width:
+        return False
+    if min_height > 0 and record.height < min_height:
         return False
     if analysis.image_quality < requirements.min_quality:
         return False
@@ -91,8 +102,12 @@ def _preference_bonus(record: ImageRecord, requirements: MosaicRequirements) -> 
 
 
 def _user_request_score(record: ImageRecord) -> float:
+    """Read the first-class Custom Prompt score from the analysis result."""
+    analysis = record.analysis
+    if analysis is None:
+        return 1.0
     try:
-        value = float(_tags(record).get("user_request_score", 1.0))
+        value = float(analysis.user_request_score)
     except (TypeError, ValueError):
         return 1.0
     return max(0.0, min(1.0, value))
@@ -243,6 +258,8 @@ def _refill_selection_after_exclusion(
     target_count: int,
     requirements: MosaicRequirements,
     phash_threshold: int = 10,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
 ) -> None:
     """Replace manually excluded selected images without changing the target size."""
     if target_count <= 0:
@@ -327,6 +344,9 @@ def rank_records(
     weights: Optional[RankingWeights] = None,
     requirements: Optional[MosaicRequirements] = None,
     user_request_weight: float = 0.0,
+    phash_threshold: int = 10,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
 ) -> list[ImageRecord]:
     requirements = requirements or MosaicRequirements()
     selected_before = sum(1 for record in records if record.status == ImageStatus.SELECTED)
@@ -342,7 +362,12 @@ def rank_records(
                 user_request_score=request_score,
                 user_request_weight=user_request_weight,
             )
-            if not _hard_eligible(record, requirements) and not record.manually_included:
+            if not _hard_eligible(
+                record,
+                requirements,
+                min_image_width=min_image_width,
+                min_image_height=min_image_height,
+            ) and not record.manually_included:
                 record.ranking.penalty_reasons.append("fails_mosaic_requirements")
                 record.ranking.final_score = 0.0
             elif record.manually_included:
@@ -365,7 +390,12 @@ def rank_records(
             and record.ranking
             and record.ranking.final_score > 0
             and not record.manually_excluded
-            and _hard_eligible(record, requirements)
+            and _hard_eligible(
+                record,
+                requirements,
+                min_image_width=min_image_width,
+                min_image_height=min_image_height,
+            )
         )
         if valid:
             record.ranking.rank = rank
@@ -378,7 +408,9 @@ def rank_records(
             ordered,
             target_count=selected_before,
             requirements=requirements,
-            phash_threshold=10,
+            phash_threshold=max(0, int(phash_threshold)),
+            min_image_width=max(0, int(min_image_width)),
+            min_image_height=max(0, int(min_image_height)),
         )
 
     return ordered

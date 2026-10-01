@@ -323,7 +323,7 @@ AIMosaicBuilder/
 
 ### Analyze once, reuse often
 
-Expensive multimodal inference is cached and reused whenever the source image, model, and Custom Prompt match.
+Expensive multimodal inference is cached and reused whenever the source image and Custom Prompt match; changing the vision model does not invalidate a valid cached analysis.
 
 ### Separate analysis from layout
 

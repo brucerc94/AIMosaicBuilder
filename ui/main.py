@@ -218,6 +218,7 @@ class MainWindow(QMainWindow):
         self._settings.cache_directory = str(source_cache_dir(source))
         save_settings(self._settings)
         self.settings_panel.set_source_folder(str(source))
+        self._analyzed_custom_prompt = None
 
         self._cache = self._get_cache_for_source(str(source))
         self._excluded_folders = load_excluded_folders(str(source))
@@ -432,6 +433,7 @@ class MainWindow(QMainWindow):
     def _on_post_finished(self, records: list[ImageRecord]) -> None:
         self._post_worker = None
         self._records = records
+        self._analyzed_custom_prompt = self._normalized_prompt(self._settings)
         self.grid.load_records(records)
         self.settings_panel.set_analyzing(False)
         self.settings_panel.set_generate_enabled(bool(self._layout_candidates()))

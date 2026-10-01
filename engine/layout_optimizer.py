@@ -596,16 +596,10 @@ def _optimize_selected_layout(
                 min_zoom=0.1,
                 zoom_decay=0.9,
                 min_subject_px=min_subject_px,
+                target_subject_px=target_subject_px,
             )
             if evaluation is None or len(evaluation.placements) != len(order):
                 continue
-            actual_target = float(target_subject_px)
-            target_error = abs(evaluation.average_subject_px - actual_target) / max(actual_target, 1.0)
-            target_bonus = max(0.0, 1.0 - min(target_error, 1.0))
-            evaluation.layout_score = 0.65 * evaluation.canvas_fill_ratio + 0.20 * (
-                max(0.0, min(1.0, (max(p.x + p.width for p in evaluation.placements) / canvas_w)
-                                  * (max(p.y + p.height for p in evaluation.placements) / canvas_h)))
-            ) + 0.10 * max(0.0, min(1.25, evaluation.average_subject_px / 260.0)) + 0.05 * target_bonus
             if best is None or evaluation.layout_score > best.layout_score + 1e-9:
                 best = evaluation
     return best

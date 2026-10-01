@@ -8,12 +8,12 @@ from pathlib import Path
 from PySide6.QtCore import QThreadPool
 from PySide6.QtWidgets import QFileDialog, QLabel, QMainWindow, QMessageBox, QSplitter, QVBoxLayout, QWidget
 
-from engine.cache import get_cache, source_cache_dir
+from engine.cache import compute_file_hash, get_cache, source_cache_dir
 from engine.image_analyzer import build_record, cache_model_key, discover_images
 from engine.models import ImageRecord, ImageStatus
 from engine.ranking import rank_records
 from engine.runtime_config import configure_vision_engine
-from engine.session import load_excluded_folders, save_session
+from engine.session import load_excluded_folders, load_session, save_session
 from engine.storage import load_settings, save_settings
 from engine.vision_llm import get_vision_engine
 from ui.exclude_folders import ExcludeFoldersDialog
@@ -234,14 +234,46 @@ class MainWindow(QMainWindow):
         model_name = Path(self._settings.model_path).name if self._settings.model_path else ""
         custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "")
         cache_model = cache_model_key(model_name, custom_prompt) if model_name else ""
+
+        session_by_path: dict[str, ImageRecord] = {}
+        try:
+            saved_records = load_session(str(source)) or []
+            session_by_path = {
+                str(Path(record.path).expanduser().resolve()): record
+                for record in saved_records
+                if record.path
+            }
+        except Exception as exc:
+            logger.warning("[source] Could not load saved session: %s", exc)
+
         records: list[ImageRecord] = []
         cache_hits = 0
+        session_hits = 0
         for path in self._paths:
             p = Path(path)
+            normalized = str(p.expanduser().resolve())
             try:
                 file_size = p.stat().st_size
             except OSError:
                 file_size = 0
+
+            restored = session_by_path.get(normalized)
+            if restored is not None and restored.file_hash:
+                try:
+                    current_hash = compute_file_hash(str(p))
+                except Exception:
+                    current_hash = ""
+                if current_hash and current_hash == restored.file_hash:
+                    restored.path = str(p)
+                    restored.filename = p.name
+                    restored.file_size = file_size
+                    restored.file_hash = current_hash
+                    records.append(restored)
+                    session_hits += 1
+                    if restored.analysis is not None:
+                        cache_hits += 1
+                    continue
+
             record = ImageRecord(
                 path=str(p),
                 filename=p.name,
@@ -259,13 +291,29 @@ class MainWindow(QMainWindow):
         self.grid.load_records(records)
         self.details.clear()
         self.settings_panel.set_analyzing(False)
-        self.settings_panel.set_generate_enabled(False)
-        self.settings_panel.set_preview_enabled(False)
-        self.settings_panel.set_export_mosaic_enabled(False)
+
+        # A saved session already contains person detections/ranking/manual
+        # choices. Re-rank those restored records against the current settings
+        # without invoking the vision model.
+        if session_hits:
+            self._rerank_without_detection()
+
+        ready_candidates = bool(self._layout_candidates())
+        self.settings_panel.set_generate_enabled(ready_candidates)
+        ready_selected = bool(self._selected_records())
+        self.settings_panel.set_preview_enabled(ready_selected)
+        self.settings_panel.set_export_mosaic_enabled(ready_selected)
         prompt_state = "custom request" if custom_prompt.strip() else "standard analysis"
+        if ready_candidates:
+            state_text = "Ready to Generate"
+        elif cache_hits == len(records):
+            state_text = "Cached analysis loaded — run Analyze only if post-processing is missing"
+        else:
+            state_text = "Ready to Analyze"
         self._summary.setText(
             f"{len(records)} images loaded | cache: {cache_hits}/{len(records)} | "
-            f"excluded folders: {len(self._excluded_folders)} | {prompt_state} | Ready to Analyze"
+            f"session: {session_hits}/{len(records)} | excluded folders: {len(self._excluded_folders)} | "
+            f"{prompt_state} | {state_text}"
         )
         logger.info(
             "[source] Open Folder | folder=%s | images=%d | cache_hits=%d | excluded_folders=%d | model_loaded=%s | custom_request=%s",
@@ -380,13 +428,41 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Images", "No supported images were found in the active folders.")
             return
 
-        self._records = [build_record(path) for path in self._paths]
+        # Keep cache/session state already hydrated by Open Folder. For a
+        # reopened source, Analyze should not throw that state away.
+        existing_by_path = {
+            str(Path(record.path).expanduser().resolve()): record
+            for record in self._records
+            if record.path
+        }
+        rebuilt_records: list[ImageRecord] = []
+        for path in self._paths:
+            normalized = str(Path(path).expanduser().resolve())
+            existing = existing_by_path.get(normalized)
+            rebuilt_records.append(existing if existing is not None else build_record(path))
+        self._records = rebuilt_records
         self.grid.load_records(self._records)
         self.details.clear()
         self.settings_panel.set_analyzing(True)
         self.settings_panel.set_generate_enabled(False)
         self.settings_panel.set_preview_enabled(False)
         self.settings_panel.set_export_mosaic_enabled(False)
+
+        # When every image already has cached analysis, no model load is needed.
+        # Post-processing (person detection + ranking) is enough to rebuild
+        # candidates from cache/session state.
+        if self._records and all(record.analysis is not None for record in self._records):
+            self._summary.setText("Using cached analysis — detecting people and ranking…")
+            worker = PostProcessWorker(self._records, self._settings)
+            worker.signals.progress.connect(
+                lambda done, total, name: self._summary.setText(f"Detecting people {done}/{total} — {name}")
+            )
+            worker.signals.finished.connect(self._on_post_finished)
+            worker.signals.error.connect(self._on_worker_error)
+            self._post_worker = worker
+            self._pool.start(worker)
+            return
+
         self._summary.setText(f"Loading vision model… {len(self._paths)} images")
 
         worker = ModelLoaderWorker(self._engine, str(model), str(mmproj), self._settings)

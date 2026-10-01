@@ -299,7 +299,6 @@ AIMosaicBuilder/
 │   ├── runtime_config.py
 │   ├── session.py
 │   ├── storage.py
-│   ├── target_subject.py
 │   └── vision_llm.py
 ├── vision/
 │   ├── cropper.py

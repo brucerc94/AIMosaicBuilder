@@ -794,7 +794,7 @@ def simulate_viewer_layout(
     zoom_decay: float = 0.9,
     min_subject_px: int = 0,
 ) -> list[LayoutPlacement]:
-    """Compatibility helper that uses saved zoom and the viewer first-fit scan."""
+    """Reproduce saved optimizer positions; fall back to first-fit for old sessions."""
     del initial_zoom
     ordered = sorted(
         records,
@@ -804,36 +804,85 @@ def simulate_viewer_layout(
             record.filename.lower(),
         ),
     )
-    zooms = {
-        record.path: (
-            record.selection.zoom
-            if record.selection
-            else _preferred_zoom(record, 260, min_zoom, 3.0)
-        )
-        for record in ordered
-    }
-    # For compatibility/export fallback, use a saved crop when present.
+
+    canvas_w, canvas_h = map(int, canvas_size)
     occupied: list[tuple[int, int, int, int]] = []
     placements: list[LayoutPlacement] = []
-    canvas_w, canvas_h = map(int, canvas_size)
+
     for record in ordered:
         crop = _saved_or_layout_crop(record, padding_px)
-        zoom = max(min_zoom, float(zooms[record.path]))
-        placement = None
-        while zoom >= min_zoom - 1e-9:
-            width = max(1, int(crop.width * zoom))
-            height = max(1, int(crop.height * zoom))
-            position = _find_non_overlap_position(canvas_w, canvas_h, width, height, occupied)
-            if position is not None:
-                placement = LayoutPlacement(record, crop, round(zoom, 6), width, height, position[0], position[1])
-                break
-            zoom *= zoom_decay
-        if placement is None:
+        zoom = max(
+            min_zoom,
+            float(
+                record.selection.zoom
+                if record.selection
+                else _preferred_zoom(record, 260, min_zoom, 3.0)
+            ),
+        )
+        width = max(1, int(round(crop.width * zoom)))
+        height = max(1, int(round(crop.height * zoom)))
+
+        saved_x = int(getattr(record.selection, "x", -1)) if record.selection else -1
+        saved_y = int(getattr(record.selection, "y", -1)) if record.selection else -1
+
+        if saved_x >= 0 and saved_y >= 0:
+            position = (saved_x, saved_y)
+            valid_saved_position = (
+                saved_x + width <= canvas_w
+                and saved_y + height <= canvas_h
+                and not any(
+                    not (
+                        saved_x + width <= ox
+                        or saved_x >= ox + ow
+                        or saved_y + height <= oy
+                        or saved_y >= oy + oh
+                    )
+                    for ox, oy, ow, oh in occupied
+                )
+            )
+            if not valid_saved_position:
+                position = None
+        else:
+            position = None
+
+        if position is None:
+            zoom_candidate = zoom
+            while zoom_candidate >= min_zoom - 1e-9:
+                width = max(1, int(crop.width * zoom_candidate))
+                height = max(1, int(crop.height * zoom_candidate))
+                position = _find_non_overlap_position(
+                    canvas_w,
+                    canvas_h,
+                    width,
+                    height,
+                    occupied,
+                )
+                if position is not None:
+                    zoom = zoom_candidate
+                    break
+                zoom_candidate *= zoom_decay
+
+        if position is None:
             continue
+
+        if min_subject_px > 0:
+            subject_h = max(1, _best_detection(record).bbox.height)
+            if int(subject_h * zoom) < min_subject_px:
+                continue
+
+        placement = LayoutPlacement(
+            record,
+            crop,
+            round(zoom, 6),
+            width,
+            height,
+            position[0],
+            position[1],
+        )
         placements.append(placement)
         occupied.append((placement.x, placement.y, placement.width, placement.height))
-    return placements
 
+    return placements
 
 def apply_layout_selection(evaluation: LayoutEvaluation, all_records: list[ImageRecord]) -> None:
     by_path = {placement.record.path: placement for placement in evaluation.placements}

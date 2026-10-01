@@ -34,6 +34,413 @@ class LayoutEvaluation:
     layout_score: float = 0.0
 
 
+
+
+def _find_non_overlap_position(
+    canvas_w: int,
+    canvas_h: int,
+    width: int,
+    height: int,
+    occupied: list[tuple[int, int, int, int]],
+    step: int = 10,
+) -> tuple[int, int] | None:
+    """Mirror ImageMosaicView's y/x 10-pixel first-fit scan."""
+    if width <= 0 or height <= 0 or width > canvas_w or height > canvas_h:
+        return None
+    for yy in range(0, canvas_h - height + 1, step):
+        for xx in range(0, canvas_w - width + 1, step):
+            x2 = xx + width
+            y2 = yy + height
+            if not any(
+                not (
+                    x2 <= ox
+                    or xx >= ox + ow
+                    or y2 <= oy
+                    or yy >= oy + oh
+                )
+                for ox, oy, ow, oh in occupied
+            ):
+                return xx, yy
+    return None
+
+
+def _best_detection(record: ImageRecord):
+    return max(
+        record.detections,
+        key=lambda detection: (
+            detection.is_main,
+            detection.confidence,
+            detection.relative_size,
+        ),
+    )
+
+
+def _layout_crop(record: ImageRecord, padding_px: int) -> BoundingBox:
+    """Derive the crop from the current main detection and configured padding."""
+    return compute_crop_box(
+        _best_detection(record).bbox,
+        record.width,
+        record.height,
+        padding_px,
+    )
+
+
+def _saved_or_layout_crop(record: ImageRecord, padding_px: int) -> BoundingBox:
+    if record.selection and record.selection.crop_bbox:
+        return record.selection.crop_bbox
+    return _layout_crop(record, padding_px)
+
+
+def _preferred_zoom(
+    record: ImageRecord,
+    target_subject_px: int,
+    min_zoom: float,
+    max_zoom: float,
+) -> float:
+    subject_height = max(1, _best_detection(record).bbox.height)
+    return max(
+        min_zoom,
+        min(max_zoom, target_subject_px / float(subject_height)),
+    )
+
+
+def _hard_eligible(
+    record: ImageRecord,
+    requirements: MosaicRequirements,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
+) -> bool:
+    analysis = record.analysis
+    if not analysis or not analysis.has_person or record.manually_excluded:
+        return False
+
+    if min_image_width > 0 and record.width < int(min_image_width):
+        return False
+    if min_image_height > 0 and record.height < int(min_image_height):
+        return False
+
+    if (
+        analysis.image_quality < requirements.min_quality
+        or analysis.person_visibility < requirements.min_person_visibility
+    ):
+        return False
+    if requirements.exclude_blurry and analysis.blur > 0.5:
+        return False
+    if requirements.exclude_occluded and analysis.occluded:
+        return False
+
+    rating = str(analysis.visual_tags.get("content_rating", "unknown"))
+    if requirements.nsfw_policy == "safe_only" and rating != "safe":
+        return False
+    if (
+        requirements.nsfw_policy == "nsfw_only"
+        and rating not in {"suggestive", "explicit"}
+    ):
+        return False
+    return True
+
+
+_REQUIREMENT_FIELDS = (
+    ("face_only", "min_face_only", "Face only"),
+    ("full_body", "min_full_body", "Full body"),
+    ("front", "min_front", "Front"),
+    ("side", "min_side", "Side"),
+    ("back", "min_back", "Back"),
+    ("male", "min_male", "Male"),
+    ("female", "min_female", "Female"),
+    ("face_visible", "min_face_visible", "Face visible"),
+    ("body_visible", "min_body_visible", "Body visible"),
+)
+
+
+def _matches_requirement(record: ImageRecord, name: str) -> bool:
+    analysis = record.analysis
+    if not analysis:
+        return False
+    tags = analysis.visual_tags
+    return {
+        "face_only": tags.get("framing") == "face_only",
+        "full_body": tags.get("framing") == "full_body",
+        "front": tags.get("orientation") == "front",
+        "side": tags.get("orientation") == "side",
+        "back": tags.get("orientation") in {"back", "three_quarter_back"},
+        "male": tags.get("gender_presentation") == "male",
+        "female": tags.get("gender_presentation") == "female",
+        "face_visible": analysis.face_visible,
+        "body_visible": analysis.body_visible,
+    }.get(name, False)
+
+
+def _required_counts(requirements: MosaicRequirements) -> dict[str, int]:
+    return {
+        name: max(0, int(getattr(requirements, field_name)))
+        for name, field_name, _label in _REQUIREMENT_FIELDS
+    }
+
+
+def _required_names(requirements: MosaicRequirements) -> list[str]:
+    counts = _required_counts(requirements)
+    return [
+        name
+        for name, _field, _label in _REQUIREMENT_FIELDS
+        for _ in range(counts[name])
+    ]
+
+
+def _requirement_deficits(
+    selected: list[ImageRecord],
+    requirements: MosaicRequirements,
+) -> dict[str, int]:
+    deficits = _required_counts(requirements)
+    for record in selected:
+        for name in deficits:
+            if deficits[name] > 0 and _matches_requirement(record, name):
+                deficits[name] -= 1
+    return deficits
+
+
+def _format_requirement_deficit(name: str, deficit: int) -> str:
+    label = next(
+        label
+        for field_name, _field, label in _REQUIREMENT_FIELDS
+        if field_name == name
+    )
+    return f"{label}: need {deficit} more"
+
+
+def _unmet_requirement_messages(deficits: dict[str, int]) -> list[str]:
+    return [
+        _format_requirement_deficit(name, deficit)
+        for name, deficit in deficits.items()
+        if deficit > 0
+    ]
+
+
+def _ensure_phash(record: ImageRecord) -> str:
+    if record.phash:
+        return record.phash
+    if not record.path:
+        return ""
+    try:
+        from engine.image_analyzer import compute_phash
+        record.phash = compute_phash(record.path)
+    except Exception as exc:
+        logger.debug(
+            "[layout] Could not compute pHash for %s: %s",
+            record.path,
+            exc,
+        )
+    return record.phash
+
+
+def _too_similar(
+    record: ImageRecord,
+    selected: list[ImageRecord],
+    threshold: int,
+) -> bool:
+    current_phash = _ensure_phash(record)
+    if not current_phash:
+        return False
+    try:
+        import imagehash
+        current = imagehash.hex_to_hash(current_phash)
+        for other in selected:
+            other_phash = _ensure_phash(other)
+            if (
+                other_phash
+                and (
+                    current - imagehash.hex_to_hash(other_phash)
+                ) <= threshold
+            ):
+                return True
+        return False
+    except Exception:
+        return False
+
+
+def _candidate_order(
+    records: Iterable[ImageRecord],
+    requirements: MosaicRequirements,
+    min_image_width: int = 0,
+    min_image_height: int = 0,
+) -> list[ImageRecord]:
+    candidates = [
+        record
+        for record in records
+        if record.ranking
+        and record.ranking.final_score > 0
+        and record.detections
+        and _hard_eligible(
+            record,
+            requirements,
+            min_image_width=min_image_width,
+            min_image_height=min_image_height,
+        )
+    ]
+    return sorted(
+        candidates,
+        key=lambda record: (
+            -(1 if record.manually_included else 0),
+            -(record.ranking.final_score if record.ranking else 0.0),
+            record.filename.lower(),
+        ),
+    )
+
+
+def _select_target_set(
+    candidates: list[ImageRecord],
+    target: int,
+    requirements: MosaicRequirements,
+    phash_threshold: int,
+) -> tuple[list[ImageRecord], list[str]]:
+    """Select exactly target candidates while honoring required attributes."""
+    target = max(0, int(target))
+    if target <= 0:
+        return [], []
+
+    forced = [
+        record for record in candidates
+        if record.manually_included
+    ]
+    if len(forced) > target:
+        return [], [
+            f"Manual includes: {len(forced)} images exceed Target Images={target}"
+        ]
+
+    selected = list(forced)
+
+    def base_score(record: ImageRecord) -> float:
+        return float(record.ranking.final_score if record.ranking else 0.0)
+
+    deficits = _requirement_deficits(selected, requirements)
+    match_counts = {
+        name: sum(
+            1 for record in candidates
+            if _matches_requirement(record, name)
+        )
+        for name, deficit in deficits.items()
+        if deficit > 0
+    }
+
+    while len(selected) < target:
+        available = [
+            record
+            for record in candidates
+            if record not in selected
+            and (
+                record.manually_included
+                or not _too_similar(record, selected, phash_threshold)
+            )
+        ]
+        if not available:
+            break
+
+        scored: list[tuple[float, float, float, str, ImageRecord]] = []
+        has_deficit = any(value > 0 for value in deficits.values())
+        for record in available:
+            coverage = 0.0
+            if has_deficit:
+                for name, deficit in deficits.items():
+                    if deficit > 0 and _matches_requirement(record, name):
+                        scarcity = 1.0 / max(1, match_counts.get(name, 1))
+                        coverage += 1.0 + 4.0 * scarcity
+
+            score = base_score(record)
+            scored.append(
+                (
+                    coverage,
+                    1.0 if record.manually_included else 0.0,
+                    score,
+                    record.filename.lower(),
+                    record,
+                )
+            )
+
+        covering = [item for item in scored if item[0] > 0.0]
+        pool = covering if covering else scored
+        chosen = max(
+            pool,
+            key=lambda item: (item[0], item[1], item[2], item[3]),
+        )
+        record = chosen[-1]
+        selected.append(record)
+
+        for name in deficits:
+            if deficits[name] > 0 and _matches_requirement(record, name):
+                deficits[name] -= 1
+
+    repair_limit = max(1, target * len(_REQUIREMENT_FIELDS))
+    for _ in range(repair_limit):
+        deficits = _requirement_deficits(selected, requirements)
+        total_deficit = sum(deficits.values())
+        if total_deficit == 0:
+            break
+
+        best_swap = None
+        best_key = None
+        removable = [
+            record for record in selected
+            if not record.manually_included
+        ]
+
+        for add in candidates:
+            if add in selected:
+                continue
+            if not any(
+                deficits[name] > 0 and _matches_requirement(add, name)
+                for name in deficits
+            ):
+                continue
+
+            for remove in removable:
+                trial = [
+                    record for record in selected
+                    if record is not remove
+                ]
+                if (
+                    not add.manually_included
+                    and _too_similar(add, trial, phash_threshold)
+                ):
+                    continue
+
+                trial.append(add)
+                trial_deficits = _requirement_deficits(
+                    trial,
+                    requirements,
+                )
+                reduction = total_deficit - sum(trial_deficits.values())
+                if reduction <= 0:
+                    continue
+
+                add_score = base_score(add)
+                remove_score = base_score(remove)
+                key = (
+                    reduction,
+                    add_score - remove_score,
+                    add_score,
+                    add.filename.lower(),
+                )
+                if best_key is None or key > best_key:
+                    best_key = key
+                    best_swap = (remove, add)
+
+        if best_swap is None:
+            break
+
+        remove, add = best_swap
+        selected.remove(remove)
+        selected.append(add)
+
+    unmet = _unmet_requirement_messages(
+        _requirement_deficits(selected, requirements)
+    )
+    if len(selected) < target:
+        unmet.append(
+            f"Target Images: could select only {len(selected)} of {target} "
+            f"with the current Similarity setting"
+        )
+    return selected, unmet
+
 def _order_variants(records: list[ImageRecord], padding_px: int) -> list[list[ImageRecord]]:
     """Generate several orders because the real viewer's first-fit packer is order-sensitive."""
     def area(record: ImageRecord) -> float:

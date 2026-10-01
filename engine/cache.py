@@ -48,6 +48,21 @@ def _is_compatible_entry_version(value: object) -> bool:
     return value == _CACHE_VERSION or value in _LEGACY_CACHE_VERSIONS
 
 
+def _cache_request_key(model_identifier: str) -> str:
+    """Return the analysis-request portion of a cached model identifier.
+
+    The model name is intentionally excluded from cache compatibility so that
+    a valid analysis can be reused after switching vision models. The optional
+    request digest is retained because changing the Custom Prompt changes the
+    meaning of the analysis and must invalidate the cache.
+    """
+    marker = "|request:"
+    text = str(model_identifier or "")
+    if marker not in text:
+        return ""
+    return text.split(marker, 1)[1]
+
+
 class AnalysisCache:
     """Read/write JSON cache scoped to a specific source/project folder."""
 
@@ -86,12 +101,19 @@ class AnalysisCache:
             )
             return None
 
-        if model and entry.get("model", "") != model:
+        cached_model = str(entry.get("model", "") or "")
+        if model and _cache_request_key(cached_model) != _cache_request_key(model):
             logger.debug(
-                f"[cache] MISS (model changed) {file_hash[:12]}… "
-                f"cached={entry.get('model', '?')} requested={model}"
+                f"[cache] MISS (custom request changed) {file_hash[:12]}… "
+                f"cached_request={_cache_request_key(cached_model) or 'default'} "
+                f"requested_request={_cache_request_key(model) or 'default'}"
             )
             return None
+        if model and cached_model and cached_model != model:
+            logger.debug(
+                f"[cache] HIT (model changed, analysis reused) {file_hash[:12]}… "
+                f"cached_model={cached_model} requested_model={model}"
+            )
 
         try:
             analysis = ImageAnalysis.from_dict(entry["analysis_result"])
@@ -128,7 +150,8 @@ class AnalysisCache:
         for file_hash, entry in list(self._data.items()):
             if not _is_compatible_entry_version(entry.get("analysis_version")):
                 continue
-            if model and entry.get("model", "") != model:
+            cached_model = str(entry.get("model", "") or "")
+            if model and _cache_request_key(cached_model) != _cache_request_key(model):
                 continue
             cached_path = entry.get("path", "")
             if not cached_path:

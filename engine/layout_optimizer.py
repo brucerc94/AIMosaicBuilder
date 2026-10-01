@@ -974,7 +974,7 @@ def _try_layout_selection_repair(
                 continue
 
             trial = base + [add]
-            if _requirement_deficits(trial, requirements):
+            if any(_requirement_deficits(trial, requirements).values()):
                 continue
 
             evaluation = _optimize_selected_layout(

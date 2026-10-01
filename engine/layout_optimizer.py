@@ -601,7 +601,7 @@ def simulate_viewer_layout(
     zoom_decay: float = 0.9,
     min_subject_px: int = 0,
 ) -> list[LayoutPlacement]:
-    """Reproduce saved optimizer positions; fall back to first-fit for old sessions."""
+    """Reproduce the real first-fit packing used by Preview/export."""
     del initial_zoom
     ordered = sorted(
         records,
@@ -626,56 +626,30 @@ def simulate_viewer_layout(
                 else _preferred_zoom(record, 260, min_zoom, 3.0)
             ),
         )
-        width = max(1, int(round(crop.width * zoom)))
-        height = max(1, int(round(crop.height * zoom)))
 
-        saved_x = int(getattr(record.selection, "x", -1)) if record.selection else -1
-        saved_y = int(getattr(record.selection, "y", -1)) if record.selection else -1
-
-        if saved_x >= 0 and saved_y >= 0:
-            position = (saved_x, saved_y)
-            valid_saved_position = (
-                saved_x + width <= canvas_w
-                and saved_y + height <= canvas_h
-                and not any(
-                    not (
-                        saved_x + width <= ox
-                        or saved_x >= ox + ow
-                        or saved_y + height <= oy
-                        or saved_y >= oy + oh
-                    )
-                    for ox, oy, ow, oh in occupied
-                )
+        while zoom >= min_zoom - 1e-9:
+            width = max(1, int(round(crop.width * zoom)))
+            height = max(1, int(round(crop.height * zoom)))
+            position = _find_non_overlap_position(
+                canvas_w,
+                canvas_h,
+                width,
+                height,
+                occupied,
             )
-            if not valid_saved_position:
-                position = None
-        else:
-            position = None
-
-        if position is None:
-            zoom_candidate = zoom
-            while zoom_candidate >= min_zoom - 1e-9:
-                width = max(1, int(crop.width * zoom_candidate))
-                height = max(1, int(crop.height * zoom_candidate))
-                position = _find_non_overlap_position(
-                    canvas_w,
-                    canvas_h,
-                    width,
-                    height,
-                    occupied,
-                )
-                if position is not None:
-                    zoom = zoom_candidate
+            if position is not None:
+                if min_subject_px > 0:
+                    subject_h = max(1, _best_detection(record).bbox.height)
+                    if int(subject_h * zoom) < min_subject_px:
+                        position = None
+                    else:
+                        break
+                else:
                     break
-                zoom_candidate *= zoom_decay
+            zoom *= zoom_decay
 
         if position is None:
             continue
-
-        if min_subject_px > 0:
-            subject_h = max(1, _best_detection(record).bbox.height)
-            if int(subject_h * zoom) < min_subject_px:
-                continue
 
         placement = LayoutPlacement(
             record,
@@ -687,9 +661,12 @@ def simulate_viewer_layout(
             position[1],
         )
         placements.append(placement)
-        occupied.append((placement.x, placement.y, placement.width, placement.height))
+        occupied.append(
+            (placement.x, placement.y, placement.width, placement.height)
+        )
 
     return placements
+
 
 def apply_layout_selection(evaluation: LayoutEvaluation, all_records: list[ImageRecord]) -> None:
     by_path = {placement.record.path: placement for placement in evaluation.placements}
@@ -708,8 +685,6 @@ def apply_layout_selection(evaluation: LayoutEvaluation, all_records: list[Image
                 padding_px=0,
                 manual_override=record.manually_included,
                 zoom=placement.zoom,
-                x=placement.x,
-                y=placement.y,
             )
         elif record.status == ImageStatus.SELECTED:
             record.status = ImageStatus.REJECTED

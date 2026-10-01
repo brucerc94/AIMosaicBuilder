@@ -826,12 +826,39 @@ def _optimize_selected_layout(
     max_zoom: float,
 ) -> LayoutEvaluation | None:
     canvas_w, canvas_h = map(int, canvas_size)
+    # Necessary capacity check: if the minimum per-image footprint required
+    # by Min Subject already exceeds the canvas area, no row arrangement can fit.
+    canvas_area = max(1, canvas_w * canvas_h)
+    minimum_required_area = 0.0
+    for record in selected:
+        crop = _layout_crop(record, padding_px)
+        subject_h = max(1, _best_detection(record).bbox.height)
+        minimum_zoom = max(
+            0.1,
+            min_subject_px / float(subject_h),
+        )
+        minimum_required_area += (
+            crop.width * minimum_zoom
+        ) * (
+            crop.height * minimum_zoom
+        )
+    if minimum_required_area > canvas_area * 1.001:
+        logger.info(
+            "FIXED layout: minimum subject footprint %.1f%% of canvas area "
+            "already exceeds capacity for %d images",
+            minimum_required_area / canvas_area * 100.0,
+            len(selected),
+        )
+        return None
+
     best: LayoutEvaluation | None = None
-    # The number of usable rows is not safely bounded by Min Subject alone,
-    # because crop height can exceed subject height and rows can still be shorter
-    # than the subject threshold after zooming. Search every row count; _row_for
-    # remains the actual feasibility gate.
-    max_rows = len(selected)
+    # Every row must be at least Min Subject tall. Include the inter-row
+    # gap in the bound so we do not search impossible row counts.
+    row_floor = max(1, min_subject_px)
+    max_rows = min(
+        len(selected),
+        max(1, (canvas_h + 2) // (row_floor + 2)),
+    )
 
     for order in _order_variants(selected, padding_px):
         for desired_rows in range(1, max_rows + 1):
@@ -1102,7 +1129,7 @@ def optimize_fixed_layout(
         max_zoom,
     )
 
-    if evaluation is None:
+    if evaluation is None and target <= 40:
         logger.warning(
             "FIXED layout: initial selection could not place all %d requested images; "
             "trying bounded layout-aware selection repair",

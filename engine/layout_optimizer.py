@@ -1113,7 +1113,7 @@ def optimize_fixed_layout(
         )
 
     selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
-    if len(selected) != target or unmet:
+    if len(selected) != target:
         return LayoutEvaluation(
             [],
             target,
@@ -1123,6 +1123,12 @@ def optimize_fixed_layout(
             0.0,
             unmet or [f"Target Images: could not select exactly {target} images"],
             0.0,
+        )
+    if unmet:
+        logger.warning(
+            "FIXED selection: required composition could not be fully satisfied; "
+            "continuing with the selected ranked pool: %s",
+            "; ".join(unmet),
         )
 
     evaluation = _optimize_selected_layout(

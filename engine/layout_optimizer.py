@@ -717,11 +717,6 @@ def _optimize_selected_layout(
 
 
 
-def _target_values(max_target: int) -> list[int]:
-    """Return every feasible target count; AUTO must not silently skip counts."""
-    return list(range(1, max(0, int(max_target)) + 1))
-
-
 def _optimize_ranked_auto_layout(
     selected: list[ImageRecord],
     canvas_size: tuple[int, int],
@@ -729,6 +724,8 @@ def _optimize_ranked_auto_layout(
     min_subject_px: int,
     target_subject_px: int,
     max_zoom: float,
+    min_zoom: float,
+    zoom_decay: float,
     requirements: MosaicRequirements,
 ) -> LayoutEvaluation | None:
     """Place a preselected ranked pool without changing image identity.
@@ -778,8 +775,8 @@ def _optimize_ranked_auto_layout(
             zooms,
             canvas_size,
             padding_px,
-            min_zoom=0.1,
-            zoom_decay=0.9,
+            min_zoom=min_zoom,
+            zoom_decay=zoom_decay,
             min_subject_px=min_subject_px,
             target_subject_px=target_subject_px,
             allow_partial=True,
@@ -823,7 +820,7 @@ def optimize_auto_layout(
     min_image_height: int = 0,
 ) -> LayoutEvaluation:
     """AUTO selects the ranked image pool first, then computes placement."""
-    del initial_zoom, min_zoom, zoom_decay
+    del initial_zoom
     requirements = requirements or MosaicRequirements()
 
     candidates = _candidate_order(
@@ -885,6 +882,8 @@ def optimize_auto_layout(
         min_subject_px=min_subject_px,
         target_subject_px=target_subject_px,
         max_zoom=max_zoom,
+        min_zoom=min_zoom,
+        zoom_decay=zoom_decay,
         requirements=requirements,
     )
     if evaluation is None:

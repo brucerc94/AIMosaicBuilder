@@ -86,6 +86,28 @@ class PreviewWindow(QDialog):
             min_subject_px=0,
         )
 
+    @staticmethod
+    def _pixmap_from_crop(record: ImageRecord, crop, width: int, height: int) -> QPixmap | None:
+        """Load one source image, crop it, resize it, and convert it to a Qt pixmap."""
+        try:
+            from PIL import Image
+
+            with Image.open(record.path) as source:
+                source = source.convert("RGB")
+                cropped = source.crop((crop.x, crop.y, crop.x2, crop.y2))
+                cropped = cropped.resize((width, height), Image.Resampling.LANCZOS)
+                raw = cropped.tobytes("raw", "RGB")
+                image = QImage(
+                    raw,
+                    width,
+                    height,
+                    width * 3,
+                    QImage.Format_RGB888,
+                ).copy()
+            return QPixmap.fromImage(image)
+        except Exception:
+            return None
+
     def _render_mosaic(self) -> None:
         self._scene.clear()
         self._scene.setSceneRect(0, 0, self._canvas_w, self._canvas_h)

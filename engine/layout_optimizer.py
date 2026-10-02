@@ -496,6 +496,7 @@ def _simulate_exact_viewer(
     zoom_decay: float,
     min_subject_px: int,
     target_subject_px: int,
+    allow_partial: bool = False,
 ) -> LayoutEvaluation | None:
     """Simulate the actual first-fit mosaic placement used by Preview/export."""
     canvas_w, canvas_h = map(int, canvas_size)
@@ -545,6 +546,8 @@ def _simulate_exact_viewer(
             zoom *= zoom_decay
 
         if placement is None:
+            if allow_partial and placements:
+                continue
             return None
 
         placements.append(placement)
@@ -719,6 +722,90 @@ def _target_values(max_target: int) -> list[int]:
     return list(range(1, max(0, int(max_target)) + 1))
 
 
+def _optimize_ranked_auto_layout(
+    selected: list[ImageRecord],
+    canvas_size: tuple[int, int],
+    padding_px: int,
+    min_subject_px: int,
+    target_subject_px: int,
+    max_zoom: float,
+    requirements: MosaicRequirements,
+) -> LayoutEvaluation | None:
+    """Place a preselected ranked pool without changing image identity.
+
+    AUTO deliberately has two phases:
+      1. Select the image pool from ranking/requirements/diversity.
+      2. Compute zoom and positions for that fixed pool.
+
+    Geometry may skip an image that cannot fit, but it never reaches back into
+    the ranking phase to replace that image with a different candidate.
+    """
+    if not selected:
+        return None
+
+    zoom_factors = _zoom_scale_candidates(
+        selected,
+        canvas_size,
+        padding_px,
+        target_subject_px,
+        min_subject_px,
+        max_zoom,
+    )
+    base_zooms = {
+        record.path: max(
+            0.1,
+            min(
+                max_zoom,
+                max(
+                    min_subject_px / max(1, _best_detection(record).bbox.height),
+                    target_subject_px / max(1, _best_detection(record).bbox.height),
+                ),
+            ),
+        )
+        for record in selected
+    }
+
+    best: LayoutEvaluation | None = None
+    best_key: tuple[int, int, float, float, float] | None = None
+
+    for factor in zoom_factors:
+        zooms = {
+            path: min(max_zoom, zoom * factor)
+            for path, zoom in base_zooms.items()
+        }
+        evaluation = _simulate_exact_viewer(
+            selected,
+            zooms,
+            canvas_size,
+            padding_px,
+            min_zoom=0.1,
+            zoom_decay=0.9,
+            min_subject_px=min_subject_px,
+            target_subject_px=target_subject_px,
+            allow_partial=True,
+        )
+        if evaluation is None or not evaluation.placements:
+            continue
+
+        placed_records = [placement.record for placement in evaluation.placements]
+        deficits = _requirement_deficits(placed_records, requirements)
+        unmet_count = sum(deficits.values())
+        evaluation.unmet_requirements = _unmet_requirement_messages(deficits)
+
+        key = (
+            1 if unmet_count == 0 else 0,
+            len(evaluation.placements),
+            evaluation.canvas_fill_ratio,
+            evaluation.layout_score,
+            -abs(evaluation.average_subject_px - target_subject_px),
+        )
+        if best_key is None or key > best_key:
+            best_key = key
+            best = evaluation
+
+    return best
+
+
 def optimize_auto_layout(
     records: list[ImageRecord],
     canvas_size: tuple[int, int],
@@ -735,9 +822,10 @@ def optimize_auto_layout(
     min_image_width: int = 0,
     min_image_height: int = 0,
 ) -> LayoutEvaluation:
-    """AUTO selects N and per-image zoom using global canvas-aware packing."""
-    del initial_zoom
+    """AUTO selects the ranked image pool first, then computes placement."""
+    del initial_zoom, min_zoom, zoom_decay
     requirements = requirements or MosaicRequirements()
+
     candidates = _candidate_order(
         records,
         requirements,
@@ -751,47 +839,78 @@ def optimize_auto_layout(
             unmet = ["No eligible images are available for the current filters"]
         return LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, unmet, 0.0)
 
-    best = LayoutEvaluation([], 0, 0.0, 0.0, 0.0, 0.0, [], 0.0)
-    last_failure: list[str] = []
-
-    for target in _target_values(max_target):
-        selected, unmet = _select_target_set(candidates, target, requirements, phash_threshold)
-        if len(selected) != target or unmet:
-            if unmet:
-                last_failure = list(unmet)
-            continue
-        evaluation = _optimize_selected_layout(
-            selected,
-            canvas_size,
-            padding_px,
-            min_subject_px,
-            target_subject_px,
-            max_zoom,
+    # Phase 1: image identity is fixed here. Ranking, requirements, manual
+    # inclusion and pHash diversity decide the pool; canvas geometry is not used.
+    selected, selection_messages = _select_target_set(
+        candidates,
+        target=max_target,
+        requirements=requirements,
+        phash_threshold=phash_threshold,
+    )
+    selection_errors = [
+        message
+        for message in selection_messages
+        if not message.startswith("Target Images:")
+    ]
+    if not selected or selection_errors:
+        messages = selection_errors or selection_messages
+        return LayoutEvaluation(
+            [],
+            len(selected),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            messages or ["AUTO selection produced no images"],
+            0.0,
         )
-        if evaluation is None:
-            last_failure = [
-                f"Target Images={target}: layout cannot satisfy Min Subject in the current canvas"
-            ]
-            continue
-        if evaluation.layout_score > best.layout_score + 1e-9 or (
-            abs(evaluation.layout_score - best.layout_score) <= 0.015
-            and len(evaluation.placements) > len(best.placements)
-        ):
-            best = evaluation
-
-    if not best.placements and last_failure:
-        best.unmet_requirements = last_failure
 
     logger.info(
-        "AUTO layout: selected=%d/%d max=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx score=%.3f unmet=%s",
-        len(best.placements), len(candidates), max_images,
-        canvas_size[0], canvas_size[1], best.average_zoom,
-        best.canvas_fill_ratio * 100.0, best.average_subject_px,
-        best.layout_score,
-        ",".join(best.unmet_requirements) if best.unmet_requirements else "none",
+        "AUTO selection phase: ranked_candidates=%d selected_pool=%d top=%s",
+        len(candidates),
+        len(selected),
+        ", ".join(record.filename for record in selected[:8]),
     )
-    return best
+    if selection_messages:
+        logger.info(
+            "AUTO selection phase notes: %s",
+            "; ".join(selection_messages),
+        )
 
+    # Phase 2: placement works only on the fixed ranked pool from phase 1.
+    evaluation = _optimize_ranked_auto_layout(
+        selected=selected,
+        canvas_size=canvas_size,
+        padding_px=padding_px,
+        min_subject_px=min_subject_px,
+        target_subject_px=target_subject_px,
+        max_zoom=max_zoom,
+        requirements=requirements,
+    )
+    if evaluation is None:
+        return LayoutEvaluation(
+            [],
+            len(selected),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            ["AUTO layout could not place any image from the selected ranked pool"],
+            0.0,
+        )
+
+    logger.info(
+        "AUTO layout phase: selected_pool=%d placed=%d canvas=%dx%d avg_zoom=%.3f fill=%.1f%% subject=%.0fpx unmet=%s",
+        len(selected),
+        len(evaluation.placements),
+        canvas_size[0],
+        canvas_size[1],
+        evaluation.average_zoom,
+        evaluation.canvas_fill_ratio * 100.0,
+        evaluation.average_subject_px,
+        ",".join(evaluation.unmet_requirements) if evaluation.unmet_requirements else "none",
+    )
+    return evaluation
 
 def _layout_proxy(record: ImageRecord, padding_px: int, min_subject_px: int) -> float:
     """Approximate how much row height this image needs to satisfy Min Subject."""

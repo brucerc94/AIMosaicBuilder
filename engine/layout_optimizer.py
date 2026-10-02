@@ -844,10 +844,14 @@ def optimize_auto_layout(
         requirements=requirements,
         phash_threshold=phash_threshold,
     )
+    # AUTO must continue when a composition requirement cannot be fully
+    # satisfied. The requirement still influences ranking/selection, but an
+    # unmet requirement is a constraint note, not a reason to discard the
+    # entire ranked pool before placement.
     selection_errors = [
         message
         for message in selection_messages
-        if not message.startswith("Target Images:")
+        if message.startswith("Manual includes:")
     ]
     if not selected or selection_errors:
         messages = selection_errors or selection_messages

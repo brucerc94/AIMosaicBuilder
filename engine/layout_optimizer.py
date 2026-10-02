@@ -323,6 +323,7 @@ def _select_target_set(
     }
 
     while len(selected) < target:
+        has_deficit = any(value > 0 for value in deficits.values())
         available = [
             record
             for record in candidates
@@ -332,11 +333,24 @@ def _select_target_set(
                 or not _too_similar(record, selected, phash_threshold)
             )
         ]
+
+        # Diversity is normally respected, but a required composition
+        # constraint has priority when every matching image is blocked only
+        # by pHash similarity. This keeps "Required Composition" meaningful.
+        if not available and has_deficit:
+            available = [
+                record
+                for record in candidates
+                if record not in selected
+                and any(
+                    deficits[name] > 0 and _matches_requirement(record, name)
+                    for name in deficits
+                )
+            ]
         if not available:
             break
 
         scored: list[tuple[float, float, float, str, ImageRecord]] = []
-        has_deficit = any(value > 0 for value in deficits.values())
         for record in available:
             coverage = 0.0
             if has_deficit:
@@ -357,7 +371,39 @@ def _select_target_set(
             )
 
         covering = [item for item in scored if item[0] > 0.0]
-        pool = covering if covering else scored
+        if covering:
+            pool = covering
+        else:
+            # There may still be a requirement-matching image blocked only by
+            # similarity. Prefer it before falling back to a normal candidate.
+            similar_covering = [
+                item
+                for item in (
+                    (
+                        sum(
+                            (
+                                1.0
+                                + 4.0 / max(1, match_counts.get(name, 1))
+                            )
+                            for name, deficit in deficits.items()
+                            if deficit > 0 and _matches_requirement(record, name)
+                        ),
+                        1.0 if record.manually_included else 0.0,
+                        base_score(record),
+                        record.filename.lower(),
+                        record,
+                    )
+                    for record in candidates
+                    if record not in selected
+                    and any(
+                        deficits[name] > 0 and _matches_requirement(record, name)
+                        for name in deficits
+                    )
+                )
+                if not _too_similar(item[-1], selected, phash_threshold)
+            ]
+            pool = similar_covering or scored
+
         chosen = max(
             pool,
             key=lambda item: (item[0], item[1], item[2], item[3]),
@@ -378,6 +424,8 @@ def _select_target_set(
 
         best_swap = None
         best_key = None
+        fallback_swap = None
+        fallback_key = None
         removable = [
             record for record in selected
             if not record.manually_included
@@ -397,11 +445,10 @@ def _select_target_set(
                     record for record in selected
                     if record is not remove
                 ]
-                if (
+                similar = (
                     not add.manually_included
                     and _too_similar(add, trial, phash_threshold)
-                ):
-                    continue
+                )
 
                 trial.append(add)
                 trial_deficits = _requirement_deficits(
@@ -420,10 +467,18 @@ def _select_target_set(
                     add_score,
                     add.filename.lower(),
                 )
-                if best_key is None or key > best_key:
+                if similar:
+                    if fallback_key is None or key > fallback_key:
+                        fallback_key = key
+                        fallback_swap = (remove, add)
+                elif best_key is None or key > best_key:
                     best_key = key
                     best_swap = (remove, add)
 
+        # Required composition wins over diversity only when a non-similar
+        # repair is unavailable.
+        if best_swap is None:
+            best_swap = fallback_swap
         if best_swap is None:
             break
 

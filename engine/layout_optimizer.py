@@ -400,7 +400,7 @@ def _select_target_set(
                         for name in deficits
                     )
                 )
-                if not _too_similar(item[-1], selected, phash_threshold)
+                if _too_similar(item[-1], selected, phash_threshold)
             ]
             pool = similar_covering or scored
 

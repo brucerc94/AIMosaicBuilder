@@ -532,6 +532,11 @@ def _simulate_exact_viewer(
             )
             if position is not None:
                 if int(subject_h * zoom) < min_subject_px:
+                    # Partial AUTO may skip this image and continue through the
+                    # already-selected ranked pool.
+                    if allow_partial:
+                        placement = None
+                        break
                     return None
                 placement = LayoutPlacement(
                     record=record,
@@ -546,7 +551,7 @@ def _simulate_exact_viewer(
             zoom *= zoom_decay
 
         if placement is None:
-            if allow_partial and placements:
+            if allow_partial:
                 continue
             return None
 

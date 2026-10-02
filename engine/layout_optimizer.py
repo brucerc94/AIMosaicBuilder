@@ -656,10 +656,23 @@ def _simulate_exact_viewer(
         target_fits.append(1.0 / (1.0 + relative_error))
 
     target_fit = sum(target_fits) / len(target_fits)
+
+    # Penalize a single oversized tile from dominating the canvas. The ideal
+    # area is based on the images actually placed, which also works for partial
+    # AUTO layouts where some ranked images cannot fit.
+    ideal_tile_area = area / max(1, len(placements))
+    area_fits = []
+    for placement in placements:
+        tile_area = max(1.0, float(placement.width * placement.height))
+        ratio = tile_area / ideal_tile_area
+        area_fits.append(min(1.0, ratio, 1.0 / max(1e-9, ratio)))
+    area_balance = sum(area_fits) / len(area_fits)
+
     layout_score = (
-        0.75 * fill
-        + 0.15 * extent
-        + 0.10 * target_fit
+        0.55 * fill
+        + 0.10 * extent
+        + 0.20 * target_fit
+        + 0.15 * area_balance
     )
 
     return LayoutEvaluation(
@@ -715,6 +728,52 @@ def _zoom_scale_candidates(
     return sorted(values)
 
 
+def _balanced_base_zooms(
+    selected: list[ImageRecord],
+    canvas_size: tuple[int, int],
+    padding_px: int,
+    min_subject_px: int,
+    target_subject_px: int,
+    max_zoom: float,
+    target_fill: float = 0.65,
+) -> dict[str, float]:
+    """Choose per-image zooms from a shared tile-area budget.
+
+    Subject target is preferred, but very wide/tall crops are reduced toward a
+    common tile area so one aspect ratio cannot dominate the mosaic.
+    """
+    canvas_w, canvas_h = map(int, canvas_size)
+    canvas_area = max(1.0, float(canvas_w * canvas_h))
+    tile_budget = max(
+        1.0,
+        target_fill * canvas_area / max(1, len(selected)),
+    )
+
+    zooms: dict[str, float] = {}
+    for record in selected:
+        crop = _layout_crop(record, padding_px)
+        crop_area = max(1.0, float(crop.width * crop.height))
+        subject_h = max(1, _best_detection(record).bbox.height)
+
+        min_subject_zoom = min_subject_px / float(subject_h)
+        target_subject_zoom = target_subject_px / float(subject_h)
+        area_zoom = (tile_budget / crop_area) ** 0.5
+
+        # Keep the target subject size as the preferred upper bound, while
+        # allowing a modest 20% area margin for better packing.
+        preferred = min(
+            target_subject_zoom,
+            area_zoom * 1.20,
+            max_zoom,
+        )
+        zooms[record.path] = max(
+            0.1,
+            min(max_zoom, max(min_subject_zoom, preferred)),
+        )
+
+    return zooms
+
+
 def _optimize_selected_layout(
     selected: list[ImageRecord],
     canvas_size: tuple[int, int],
@@ -738,19 +797,14 @@ def _optimize_selected_layout(
     )
 
     for order in _order_variants(selected, padding_px):
-        base_zooms = {
-            record.path: max(
-                0.1,
-                min(
-                    max_zoom,
-                    max(
-                        min_subject_px / max(1, _best_detection(record).bbox.height),
-                        target_subject_px / max(1, _best_detection(record).bbox.height),
-                    ),
-                ),
-            )
-            for record in order
-        }
+        base_zooms = _balanced_base_zooms(
+            order,
+            canvas_size,
+            padding_px,
+            min_subject_px,
+            target_subject_px,
+            max_zoom,
+        )
 
         for factor in zoom_factors:
             zooms = {
@@ -808,19 +862,14 @@ def _optimize_ranked_auto_layout(
         min_subject_px,
         max_zoom,
     )
-    base_zooms = {
-        record.path: max(
-            0.1,
-            min(
-                max_zoom,
-                max(
-                    min_subject_px / max(1, _best_detection(record).bbox.height),
-                    target_subject_px / max(1, _best_detection(record).bbox.height),
-                ),
-            ),
-        )
-        for record in selected
-    }
+    base_zooms = _balanced_base_zooms(
+        selected,
+        canvas_size,
+        padding_px,
+        min_subject_px,
+        target_subject_px,
+        max_zoom,
+    )
 
     best: LayoutEvaluation | None = None
     best_key: tuple[int, int, float, float, float] | None = None

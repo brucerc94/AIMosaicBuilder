@@ -487,7 +487,7 @@ class VisionLLMEngine:
         if llama_features.supports_chat_completion_param("response_format"):
             kwargs["response_format"] = {"type": "json_object"}
         logger.info(
-            "[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | custom_request=%s | temperature=%.2f | top_p=%.2f | top_k=%d | response_format=%s | instance_id=%s",
+            "[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | image_max_dimension=%d | custom_request=%s | temperature=%.2f | top_p=%.2f | top_k=%d | response_format=%s | instance_id=%s",
             image_name, self._model_name, self._model_ctx, max_tokens, image_max_dimension,
             "yes" if request else "no", temperature, kwargs["top_p"], kwargs["top_k"],
             kwargs.get("response_format", {}).get("type", "none"), hex(id(self._model)),

@@ -412,6 +412,7 @@ class AppSettings:
     cache_directory: str = ""
     n_ctx: int = 4096
     max_tokens: int = 576
+    ai_detection_image_size: int = 1024
     n_gpu_layers: int = 0
     n_threads: int = 4
     n_threads_batch: int = 0
@@ -442,6 +443,7 @@ class AppSettings:
             "cache_directory": self.cache_directory,
             "n_ctx": self.n_ctx,
             "max_tokens": self.max_tokens,
+            "ai_detection_image_size": self.ai_detection_image_size,
             "n_gpu_layers": self.n_gpu_layers,
             "n_threads": self.n_threads,
             "n_threads_batch": self.n_threads_batch,
@@ -477,6 +479,10 @@ class AppSettings:
         except (TypeError, ValueError):
             max_tokens = 576
         try:
+            ai_detection_image_size = int(d.get("ai_detection_image_size", 1024))
+        except (TypeError, ValueError):
+            ai_detection_image_size = 1024
+        try:
             min_subject_percent = float(d.get("min_subject_percent", 10.0))
         except (TypeError, ValueError):
             min_subject_percent = 10.0
@@ -491,6 +497,7 @@ class AppSettings:
             cache_directory=str(d.get("cache_directory", "")),
             n_ctx=max(2048, n_ctx),
             max_tokens=max(64, min(4096, max_tokens)),
+            ai_detection_image_size=max(384, min(2048, ai_detection_image_size)),
             n_gpu_layers=int(d.get("n_gpu_layers", 0)),
             n_threads=int(d.get("n_threads", 4)),
             n_threads_batch=int(d.get("n_threads_batch", 0)),

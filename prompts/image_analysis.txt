@@ -1,44 +1,21 @@
 [SYSTEM]
 Analyze photos for a portrait mosaic.
 Return ONLY one valid JSON object. No explanations. Use "unknown" when uncertain.
+Output the JSON on ONE LINE with NO markdown, indentation, or extra whitespace.
 
 [USER]
-Analyze this photo. Return ONLY JSON matching this structure:
-{
-  "has_person": false,
-  "person_count": 0,
-  "main_subject_is_person": false,
-  "person_visibility": 0,
-  "face_visible": false,
-  "body_visible": false,
-  "occluded": false,
-  "blur": 0,
-  "composition": 0,
-  "image_quality": 0,
-  "subject_quality": 0,
-  "mosaic_value": 0,
-  "user_request_score": 1,
-  "visual_tags": {
-    "framing": "unknown",
-    "orientation": "unknown",
-    "gender_presentation": "unknown",
-    "content_rating": "unknown",
-    "pose": "unknown",
-    "looking_at_camera": false
-  },
-  "reject": false,
-  "reject_reason": ""
-}
+Analyze this photo. Return ONLY ONE-LINE JSON:
+{"has_person":false,"person_count":0,"main_subject_is_person":false,"person_visibility":0,"face_visible":false,"body_visible":false,"occluded":false,"blur":0,"composition":0,"image_quality":0,"subject_quality":0,"mosaic_value":0,"user_request_score":1,"visual_tags":{"framing":"unknown","orientation":"unknown","gender_presentation":"unknown","content_rating":"unknown","pose":"unknown","looking_at_camera":false},"reject":false,"reject_reason":""}
 
 Rules:
 - Scores are 0..1.
-- Boolean fields MUST use JSON true or false. Never use 0 or 1 for boolean fields.
-- framing: face_only, head_shoulders, upper_body, half_body, full_body, unknown.
-- orientation: front, three_quarter_front, side, three_quarter_back, back, unknown.
-- gender_presentation: male, female, unknown. Visual presentation only.
-- content_rating: safe, nsfw, unknown.
-- pose: standing, seated, lying, walking, other, unknown.
-- reject_reason: no_person, blurry, low_quality, occluded, person_too_small, empty, or "".
+- Boolean fields MUST be JSON true or false, never 0 or 1.
+- framing: face_only|head_shoulders|upper_body|half_body|full_body|unknown.
+- orientation: front|three_quarter_front|side|three_quarter_back|back|unknown.
+- gender_presentation: male|female|unknown. Visual presentation only.
+- content_rating: safe|nsfw|unknown.
+- pose: standing|seated|lying|walking|other|unknown.
+- reject_reason: no_person|blurry|low_quality|occluded|person_too_small|empty|"".
 - Without a custom request, user_request_score=1.
-- With a custom request, user_request_score measures only how well the photo matches it: 0=no match, 0.5=partial, 1=very strong match.
-- The custom request must not change the meaning of other fields.
+- With a custom request, user_request_score measures only image match: 0=no match, 0.5=partial, 1=very strong.
+- The custom request must not change other fields.

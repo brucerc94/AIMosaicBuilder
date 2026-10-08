@@ -46,6 +46,7 @@ def load_settings() -> AppSettings:
                 payload["n_ctx"] = 4096
             settings = AppSettings.from_dict(payload)
             settings.max_tokens = max(64, min(4096, int(payload.get("max_tokens", 576))))
+            settings.ai_detection_image_size = max(384, min(2048, int(payload.get("ai_detection_image_size", 1024))))
             settings.min_subject_percent = max(1.0, min(50.0, float(payload.get("min_subject_percent", 10.0))))
             settings.target_subject_percent = max(
                 settings.min_subject_percent,
@@ -61,6 +62,7 @@ def load_settings() -> AppSettings:
     settings = AppSettings()
     settings.n_ctx = 4096
     settings.max_tokens = 576
+    settings.ai_detection_image_size = 1024
     settings.min_subject_percent = 10.0
     settings.target_subject_percent = 15.0
     settings.custom_prompt = ""
@@ -74,6 +76,7 @@ def save_settings(settings: AppSettings) -> None:
         payload = settings.to_dict()
         payload["n_ctx"] = int(getattr(settings, "n_ctx", 4096))
         payload["max_tokens"] = max(64, min(4096, int(getattr(settings, "max_tokens", 576))))
+        payload["ai_detection_image_size"] = max(384, min(2048, int(getattr(settings, "ai_detection_image_size", 1024))))
         min_subject_percent = max(1.0, min(50.0, float(getattr(settings, "min_subject_percent", 10.0))))
         target_subject_percent = max(
             min_subject_percent,

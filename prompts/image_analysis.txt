@@ -32,6 +32,7 @@ Analyze this photo. Return ONLY JSON matching this structure:
 
 Rules:
 - Scores are 0..1.
+- Boolean fields MUST use JSON true or false. Never use 0 or 1 for boolean fields.
 - framing: face_only, head_shoulders, upper_body, half_body, full_body, unknown.
 - orientation: front, three_quarter_front, side, three_quarter_back, back, unknown.
 - gender_presentation: male, female, unknown. Visual presentation only.

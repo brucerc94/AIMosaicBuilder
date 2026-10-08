@@ -183,13 +183,14 @@ def build_record(path: str) -> ImageRecord:
     )
 
 
-def cache_model_key(model_name: str, custom_prompt: str = "") -> str:
-    """Return a cache model identifier that changes when the custom request changes."""
+def cache_model_key(model_name: str, custom_prompt: str = "", image_size: int = 1024) -> str:
+    """Return a cache key that changes when analysis inputs change."""
     request = (custom_prompt or "").strip()[:2000]
+    image_size = max(384, min(2048, int(image_size)))
     if not request:
-        return model_name
+        return f"{model_name}|vision_size:{image_size}"
     digest = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
-    return f"{model_name}|request:{digest}"
+    return f"{model_name}|request:{digest}|vision_size:{image_size}"
 
 
 class AnalysisPipeline:
@@ -226,7 +227,8 @@ class AnalysisPipeline:
         results: list[ImageRecord] = []
         model_name = self._engine.model_name
         custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()[:2000]
-        cache_model = cache_model_key(model_name, custom_prompt)
+        image_size = max(384, min(2048, int(getattr(self._settings, "ai_detection_image_size", 1024))))
+        cache_model = cache_model_key(model_name, custom_prompt, image_size=image_size)
 
         session_by_path: dict[str, ImageRecord] = {}
         source_folder = str(getattr(self._settings, "last_source_folder", "") or "")
@@ -244,10 +246,11 @@ class AnalysisPipeline:
                 logger.warning("[analyzer] Could not load saved session: %s", exc)
 
         logger.info(
-            "[analyzer] START | images=%d | model=%s | engine_loaded=%s | custom_request=%s",
+            "[analyzer] START | images=%d | model=%s | engine_loaded=%s | ai_image_size=%d | custom_request=%s",
             total,
             model_name or "unknown",
             self._engine.model_loaded,
+            image_size,
             "yes" if custom_prompt else "no",
         )
 
@@ -355,6 +358,7 @@ class AnalysisPipeline:
                     path,
                     max_tokens=int(getattr(self._settings, "max_tokens", 576)),
                     custom_prompt=custom_prompt,
+                    image_max_dimension=image_size,
                 )
             except Exception as e:
                 logger.error(f"[analyzer] LLM error for {path}: {e}")
@@ -406,10 +410,10 @@ class AnalysisPipeline:
         run_elapsed = time.perf_counter() - run_started
         avg_inference = self._inference_seconds / self._n_cache_misses if self._n_cache_misses else 0.0
         logger.info(
-            "[analyzer] END | total=%d | elapsed=%.2fs | cache_hits=%d | cache_misses=%d | inference_total=%.2fs | inference_avg=%.2fs | prefilter_rejected=%d | errors=%d | people_detected=%d | custom_request=%s",
+            "[analyzer] END | total=%d | elapsed=%.2fs | cache_hits=%d | cache_misses=%d | inference_total=%.2fs | inference_avg=%.2fs | prefilter_rejected=%d | errors=%d | people_detected=%d | ai_image_size=%d | custom_request=%s",
             total, run_elapsed, self._n_cache_hits, self._n_cache_misses, self._inference_seconds,
             avg_inference, self._n_prefilter_rejected, self._n_errors, self._n_people,
-            "yes" if custom_prompt else "no",
+            image_size, "yes" if custom_prompt else "no",
         )
         return results
 

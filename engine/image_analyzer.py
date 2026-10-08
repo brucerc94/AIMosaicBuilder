@@ -183,14 +183,14 @@ def build_record(path: str) -> ImageRecord:
     )
 
 
-def cache_model_key(model_name: str, custom_prompt: str = "", image_size: int = 1024) -> str:
-    """Return a cache key that changes when analysis inputs change."""
+def cache_model_key(model_name: str, custom_prompt: str = "") -> str:
+    """Return a cache key based on the semantic analysis request."""
     request = (custom_prompt or "").strip()[:2000]
-    image_size = max(384, min(2048, int(image_size)))
     if not request:
-        return f"{model_name}|vision_size:{image_size}"
+        return model_name
     digest = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
-    return f"{model_name}|request:{digest}|vision_size:{image_size}"
+    return f"{model_name}|request:{digest}"
+
 
 
 class AnalysisPipeline:
@@ -228,7 +228,7 @@ class AnalysisPipeline:
         model_name = self._engine.model_name
         custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()[:2000]
         image_size = max(384, min(2048, int(getattr(self._settings, "ai_detection_image_size", 1024))))
-        cache_model = cache_model_key(model_name, custom_prompt, image_size=image_size)
+        cache_model = cache_model_key(model_name, custom_prompt)
 
         session_by_path: dict[str, ImageRecord] = {}
         source_folder = str(getattr(self._settings, "last_source_folder", "") or "")

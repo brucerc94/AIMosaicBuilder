@@ -131,6 +131,21 @@ def _extract_json(text: str) -> Optional[dict]:
     return None
 
 
+def _coerce_bool(value: object, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if value in (0, 1):
+            return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes"}:
+            return True
+        if normalized in {"false", "0", "no"}:
+            return False
+    raise ValueError(f"{field_name} must be boolean")
+
+
 def _strict_analysis(data: dict) -> dict:
     required_bools = (
         "has_person", "main_subject_is_person", "face_visible", "body_visible", "occluded", "reject"
@@ -139,8 +154,7 @@ def _strict_analysis(data: dict) -> dict:
         "person_visibility", "blur", "composition", "image_quality", "subject_quality", "mosaic_value"
     )
     for field in required_bools:
-        if not isinstance(data.get(field), bool):
-            raise ValueError(f"{field} must be boolean")
+        data[field] = _coerce_bool(data.get(field), field)
     try:
         person_count = int(data.get("person_count"))
     except (TypeError, ValueError) as exc:
@@ -168,16 +182,24 @@ def _strict_analysis(data: dict) -> dict:
         "pose": {"standing", "seated", "lying", "walking", "other", "unknown"},
     }
     normalized_tags: dict[str, object] = {}
+    enum_aliases = {
+        "pose": {
+            "sitting": "seated",
+            "sitting_down": "seated",
+            "lying_back": "lying",
+            "lying_down": "lying",
+            "standing_up": "standing",
+        },
+    }
     for field_name, allowed_values in enum_fields.items():
-        value = str(tags.get(field_name, "unknown")).lower()
+        value = str(tags.get(field_name, "unknown")).strip().lower()
+        value = enum_aliases.get(field_name, {}).get(value, value)
         if field_name == "content_rating" and value == "nsfw":
             # Keep the internal legacy representation so existing ranking/cache
             # logic remains compatible. The raw model response still contains NSFW.
             value = "explicit"
         normalized_tags[field_name] = value if value in allowed_values else "unknown"
-    looking_at_camera = tags.get("looking_at_camera", False)
-    if not isinstance(looking_at_camera, bool):
-        raise ValueError("visual_tags.looking_at_camera must be boolean")
+    looking_at_camera = _coerce_bool(tags.get("looking_at_camera", False), "visual_tags.looking_at_camera")
     normalized_tags["looking_at_camera"] = looking_at_camera
     data["visual_tags"] = normalized_tags
 

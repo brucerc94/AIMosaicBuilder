@@ -161,10 +161,6 @@ class MainWindow(QMainWindow):
             int(getattr(old, "min_image_width", 0)) != int(getattr(settings, "min_image_width", 0))
             or int(getattr(old, "min_image_height", 0)) != int(getattr(settings, "min_image_height", 0))
         )
-        image_size_changed = (
-            int(getattr(old, "ai_detection_image_size", 1024))
-            != int(getattr(settings, "ai_detection_image_size", 1024))
-        )
         layout_changed = self._layout_settings_changed(old, settings)
 
         self._settings = settings
@@ -182,11 +178,8 @@ class MainWindow(QMainWindow):
                 "Person detector settings changed — run Analyze to refresh detections.",
                 clear_detections=True,
             )
-        elif image_size_changed:
-            self._invalidate_analysis_state(
-                "AI detection image size changed — run Analyze to refresh the vision analysis.",
-                clear_detections=False,
-            )
+        # Changing AI detection resolution only affects future cache misses;
+        # existing semantic analyses remain valid and are intentionally kept.
         elif image_size_filter_changed:
             self._invalidate_analysis_state(
                 "Minimum image dimensions changed — run Analyze to apply the new filter.",

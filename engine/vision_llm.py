@@ -195,11 +195,26 @@ def _strict_analysis(data: dict) -> dict:
 def _parse_analysis(text: str, model_name: str) -> ImageAnalysis:
     data = _extract_json(text)
     if data is None:
+        logger.error(
+            "[vision] PARSE ERROR | model=%s | reason=invalid_json | response_chars=%d | raw_response=%r",
+            model_name,
+            len(text),
+            text[:4000],
+        )
         return ImageAnalysis.error_result("Model response was not valid JSON.", model_name)
+
     try:
         analysis = ImageAnalysis.from_dict(_strict_analysis(data))
     except Exception as exc:
+        logger.error(
+            "[vision] PARSE ERROR | model=%s | reason=validation | error=%s | fields=%s | raw_response=%r",
+            model_name,
+            exc,
+            sorted(data.keys()),
+            text[:4000],
+        )
         return ImageAnalysis.error_result(f"Invalid analysis JSON: {exc}", model_name)
+
     analysis.raw_response = text
     analysis.model_used = model_name
     return analysis

@@ -147,16 +147,19 @@ class SettingsPanel(QWidget):
         self._gpu_spin = QSpinBox(); self._gpu_spin.setRange(-1, 999); self._gpu_spin.setSuffix(" layers"); self._gpu_spin.setToolTip("-1 = all layers, 0 = CPU only")
         self._ctx_spin = QSpinBox(); self._ctx_spin.setRange(2048, 131072); self._ctx_spin.setSingleStep(512); self._ctx_spin.setSuffix(" tokens")
         self._max_tokens_spin = QSpinBox(); self._max_tokens_spin.setRange(64, 4096); self._max_tokens_spin.setSingleStep(32); self._max_tokens_spin.setSuffix(" tokens")
+        self._ai_detection_image_size_spin = QSpinBox(); self._ai_detection_image_size_spin.setRange(384, 2048); self._ai_detection_image_size_spin.setSingleStep(128); self._ai_detection_image_size_spin.setSuffix(" px")
         self._threads_spin = QSpinBox(); self._threads_spin.setRange(1, 64); self._threads_spin.setSuffix(" threads")
         self._batch_threads_spin = QSpinBox(); self._batch_threads_spin.setRange(0, 64); self._batch_threads_spin.setSuffix(" threads")
         self._n_batch_spin = QSpinBox(); self._n_batch_spin.setRange(64, 4096); self._n_batch_spin.setSingleStep(64)
         self._n_ubatch_spin = QSpinBox(); self._n_ubatch_spin.setRange(64, 4096); self._n_ubatch_spin.setSingleStep(64)
         self._ctx_spin.setToolTip("Context window. 4096 is the recommended default for Gemma-4 vision.")
         self._max_tokens_spin.setToolTip("Maximum generated tokens for the analysis JSON. 576 is the recommended default.")
+        self._ai_detection_image_size_spin.setToolTip("Maximum image dimension sent to the AI for vision detection. The original image is never modified. 1024 px is recommended.")
         self._n_ubatch_spin.setToolTip("CUDA micro-batch. Must be ≤ n_batch.")
         form.addRow("GPU Layers:", self._gpu_spin)
         form.addRow("Context:", self._ctx_spin)
         form.addRow("Max Tokens:", self._max_tokens_spin)
+        form.addRow("AI Detection Image Size:", self._ai_detection_image_size_spin)
         form.addRow("CPU Threads:", self._threads_spin)
         form.addRow("Batch Threads:", self._batch_threads_spin)
         form.addRow("n_batch:", self._n_batch_spin)
@@ -321,7 +324,7 @@ class SettingsPanel(QWidget):
     def _all_settings_widgets(self) -> list[QWidget]:
         return [
             self._model_edit, self._mmproj_edit,
-            self._gpu_spin, self._ctx_spin, self._max_tokens_spin, self._threads_spin,
+            self._gpu_spin, self._ctx_spin, self._max_tokens_spin, self._ai_detection_image_size_spin, self._threads_spin,
             self._batch_threads_spin, self._n_batch_spin, self._n_ubatch_spin,
             self._detector_model_edit, self._detector_conf_spin,
             self._target_spin, self._padding_spin, self._canvas_w_spin, self._canvas_h_spin,
@@ -344,6 +347,7 @@ class SettingsPanel(QWidget):
         self._gpu_spin.setValue(s.n_gpu_layers)
         self._ctx_spin.setValue(max(2048, int(s.n_ctx)))
         self._max_tokens_spin.setValue(max(64, min(4096, int(s.max_tokens))))
+        self._ai_detection_image_size_spin.setValue(max(384, min(2048, int(getattr(s, "ai_detection_image_size", 1024)))))
         self._threads_spin.setValue(s.n_threads)
         self._batch_threads_spin.setValue(s.n_threads_batch)
         self._n_batch_spin.setValue(s.n_batch)
@@ -395,6 +399,7 @@ class SettingsPanel(QWidget):
         s.n_gpu_layers = self._gpu_spin.value()
         s.n_ctx = max(2048, self._ctx_spin.value())
         s.max_tokens = self._max_tokens_spin.value()
+        s.ai_detection_image_size = self._ai_detection_image_size_spin.value()
         s.n_threads = self._threads_spin.value()
         s.n_threads_batch = self._batch_threads_spin.value()
         s.n_batch = self._n_batch_spin.value()

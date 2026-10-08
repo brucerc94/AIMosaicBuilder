@@ -465,13 +465,15 @@ class VisionLLMEngine:
         max_tokens: int = 576,
         temperature: float = 0.0,
         custom_prompt: str = "",
+        image_max_dimension: int = 1280,
     ) -> ImageAnalysis:
         if not self.vision_ready:
             raise RuntimeError("Vision model is not loaded with a valid model and mmproj.")
         image_name = Path(image_path).name
         total_started = time.perf_counter()
         preprocess_started = time.perf_counter()
-        img_b64 = _encode_image_b64(image_path)
+        image_max_dimension = max(384, min(2048, int(image_max_dimension)))
+        img_b64 = _encode_image_b64(image_path, max_dimension=image_max_dimension)
         preprocess_elapsed = time.perf_counter() - preprocess_started
         request = custom_prompt.strip()[:2000]
         kwargs = {
@@ -486,7 +488,7 @@ class VisionLLMEngine:
             kwargs["response_format"] = {"type": "json_object"}
         logger.info(
             "[vision] INFERENCE START | image=%s | model=%s | n_ctx=%d | max_tokens=%d | custom_request=%s | temperature=%.2f | top_p=%.2f | top_k=%d | response_format=%s | instance_id=%s",
-            image_name, self._model_name, self._model_ctx, max_tokens,
+            image_name, self._model_name, self._model_ctx, max_tokens, image_max_dimension,
             "yes" if request else "no", temperature, kwargs["top_p"], kwargs["top_k"],
             kwargs.get("response_format", {}).get("type", "none"), hex(id(self._model)),
         )
@@ -517,8 +519,8 @@ class VisionLLMEngine:
         )
         return analysis
 
-    def analyze_image_raw(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0, custom_prompt: str = ""):
-        analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature, custom_prompt=custom_prompt)
+    def analyze_image_raw(self, image_path: str, max_tokens: int = 576, temperature: float = 0.0, custom_prompt: str = "", image_max_dimension: int = 1280):
+        analysis = self.analyze_image(image_path, max_tokens=max_tokens, temperature=temperature, custom_prompt=custom_prompt, image_max_dimension=image_max_dimension)
         return analysis.raw_response, analysis
 
 

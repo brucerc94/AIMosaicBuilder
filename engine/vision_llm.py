@@ -555,8 +555,8 @@ class VisionLLMEngine:
                         "type": "text",
                         "text": (
                             "Evaluate this photograph against this visual preference only. "
-                            "Do not perform the full portrait analysis.\\n\\n"
-                            f"<visual_preference>\\n{request}\\n</visual_preference>\\n\\n"
+                            "Do not perform the full portrait analysis.\n\n"
+                            f"<visual_preference>\n{request}\n</visual_preference>\n\n"
                             'Return JSON in this exact shape: {"score": 0.0}.'
                         ),
                     },

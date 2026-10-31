@@ -220,8 +220,8 @@ class AnalysisCache:
             logger.warning(f"[cache] Corrupt entry {file_hash[:12]}: {exc}")
             return None
 
-    def get_by_path(self, path: str, model: str = "") -> Optional[ImageAnalysis]:
-        """Hydrate an analysis from a source-folder cache without hashing the file."""
+    def get_entry_by_path(self, path: str, model: str = "") -> Optional[tuple[str, ImageAnalysis]]:
+        """Return the cached file hash and analysis for a path without hashing the file."""
         requested = Path(path).expanduser().resolve()
         for file_hash, entry in list(self._data.items()):
             if not _is_compatible_entry_version(entry.get("analysis_version")):
@@ -254,12 +254,17 @@ class AnalysisCache:
                 if entry.get("analysis_version") != _CACHE_VERSION:
                     entry["analysis_version"] = _CACHE_VERSION
                     self._dirty = True
-                logger.debug("[cache] PATH HIT path=%s", path)
-                return analysis
+                logger.debug("[cache] PATH HIT path=%s hash=%s…", path, file_hash[:12])
+                return file_hash, analysis
             except Exception:
                 continue
         logger.debug("[cache] PATH MISS path=%s", path)
         return None
+
+    def get_by_path(self, path: str, model: str = "") -> Optional[ImageAnalysis]:
+        """Backward-compatible analysis-only lookup by source path."""
+        cached_entry = self.get_entry_by_path(path, model=model)
+        return cached_entry[1] if cached_entry is not None else None
 
     def put(self, file_hash: str, path: str, analysis: ImageAnalysis, model: str = "") -> None:
         """Store only reusable analysis results; never cache LLM/runtime failures."""

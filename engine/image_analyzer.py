@@ -15,7 +15,6 @@ This module is called from background workers — never from the UI thread.
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
 import time
@@ -184,12 +183,8 @@ def build_record(path: str) -> ImageRecord:
 
 
 def cache_model_key(model_name: str, custom_prompt: str = "") -> str:
-    """Return a cache key based on the semantic analysis request."""
-    request = (custom_prompt or "").strip()[:2000]
-    if not request:
-        return model_name
-    digest = hashlib.sha256(request.encode("utf-8")).hexdigest()[:16]
-    return f"{model_name}|request:{digest}"
+    """Identify reusable visual analysis by model, never by the current custom prompt."""
+    return model_name
 
 
 
@@ -228,7 +223,7 @@ class AnalysisPipeline:
         model_name = self._engine.model_name
         custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()[:2000]
         image_size = max(384, min(2048, int(getattr(self._settings, "ai_detection_image_size", 1024))))
-        cache_model = cache_model_key(model_name, custom_prompt)
+        cache_model = cache_model_key(model_name)
 
         session_by_path: dict[str, ImageRecord] = {}
         source_folder = str(getattr(self._settings, "last_source_folder", "") or "")
@@ -322,6 +317,7 @@ class AnalysisPipeline:
             cache_started = time.perf_counter()
             cached = self._cache.get(file_hash, model=cache_model)
             cache_elapsed = time.perf_counter() - cache_started
+
             if cached is not None:
                 record.analysis = cached
                 record.status = ImageStatus.CACHED
@@ -329,71 +325,92 @@ class AnalysisPipeline:
                 self._n_cache_hits += 1
                 if cached.has_person:
                     self._n_people += 1
-                phash_started = time.perf_counter()
-                record.phash = compute_phash(path)
-                phash_elapsed = time.perf_counter() - phash_started
-                total_elapsed = time.perf_counter() - image_started
                 logger.info(
-                    "[analyzer] CACHE HIT | %d/%d | image=%s | cache=%.3fs | phash=%.3fs | total=%.3fs | restored_record=%s",
-                    idx + 1, total, Path(path).name, cache_elapsed, phash_elapsed, total_elapsed,
+                    "[analyzer] BASE CACHE HIT | %d/%d | image=%s | cache=%.3fs | restored_record=%s",
+                    idx + 1, total, Path(path).name, cache_elapsed,
                     "yes" if saved_record is not None and saved_record.file_hash == file_hash else "no",
                 )
-                results.append(record)
-                self._emit_progress(idx + 1, total, record)
-                continue
-
-            self._n_cache_misses += 1
-            logger.info(
-                "[analyzer] CACHE MISS | %d/%d | image=%s | hash=%.3fs | cache=%.3fs",
-                idx + 1, total, Path(path).name, hash_elapsed, cache_elapsed,
-            )
-
-            record.status = ImageStatus.ANALYZING
-            self._emit_progress(idx + 1, total, record)
-
-            t_start = time.perf_counter()
-            analysis_failed = False
-            try:
-                analysis = self._engine.analyze_image(
-                    path,
-                    max_tokens=int(getattr(self._settings, "max_tokens", 576)),
-                    custom_prompt=custom_prompt,
-                    image_max_dimension=image_size,
-                )
-            except Exception as e:
-                logger.error(f"[analyzer] LLM error for {path}: {e}")
-                analysis = ImageAnalysis.error_result(str(e), model_name)
-                analysis_failed = True
-                self._n_errors += 1
-
-            elapsed = time.perf_counter() - t_start
-            self._inference_seconds += elapsed
-            logger.debug(f"[analyzer] Analysed in {elapsed:.1f}s: {Path(path).name}")
-
-            record.analysis = analysis
-            if analysis_failed or analysis.reject_reason == RejectReason.LLM_ERROR.value:
-                record.status = ImageStatus.ERROR
-                record.error_message = analysis.notes or "Vision analysis failed."
             else:
-                record.status = ImageStatus.ANALYZED if not analysis.reject else ImageStatus.REJECTED
-                if analysis.has_person:
-                    self._n_people += 1
+                self._n_cache_misses += 1
+                logger.info(
+                    "[analyzer] BASE CACHE MISS | %d/%d | image=%s | hash=%.3fs | cache=%.3fs",
+                    idx + 1, total, Path(path).name, hash_elapsed, cache_elapsed,
+                )
+                record.status = ImageStatus.ANALYZING
+                self._emit_progress(idx + 1, total, record)
 
-            phash_started = time.perf_counter()
-            record.phash = compute_phash(path)
-            phash_elapsed = time.perf_counter() - phash_started
+                inference_started = time.perf_counter()
+                analysis_failed = False
+                try:
+                    analysis = self._engine.analyze_image(
+                        path,
+                        max_tokens=int(getattr(self._settings, "max_tokens", 576)),
+                        custom_prompt="",
+                        image_max_dimension=image_size,
+                    )
+                except Exception as exc:
+                    logger.error("[analyzer] LLM error for %s: %s", path, exc)
+                    analysis = ImageAnalysis.error_result(str(exc), model_name)
+                    analysis_failed = True
+                    self._n_errors += 1
 
-            cache_write_started = time.perf_counter()
-            self._cache.put(file_hash, path, analysis, model=cache_model)
-            self._cache.flush()
-            cache_write_elapsed = time.perf_counter() - cache_write_started
+                inference_elapsed = time.perf_counter() - inference_started
+                self._inference_seconds += inference_elapsed
+                record.analysis = analysis
+                if analysis_failed or analysis.reject_reason == RejectReason.LLM_ERROR.value:
+                    record.status = ImageStatus.ERROR
+                    record.error_message = analysis.notes or "Vision analysis failed."
+                else:
+                    record.status = ImageStatus.ANALYZED if not analysis.reject else ImageStatus.REJECTED
+                    if analysis.has_person:
+                        self._n_people += 1
+                    analysis.user_request_score = 1.0
+                    analysis.visual_tags.pop("user_request_score", None)
+                    self._cache.put(file_hash, path, analysis, model=cache_model)
+                    self._cache.flush()
+                logger.info(
+                    "[analyzer] BASE ANALYSIS DONE | %d/%d | image=%s | inference=%.2fs | status=%s",
+                    idx + 1, total, Path(path).name, inference_elapsed, record.status.value.upper(),
+                )
 
-            total_elapsed = time.perf_counter() - image_started
-            logger.info(
-                "[analyzer] ANALYZED | %d/%d | image=%s | inference=%.2fs | phash=%.3fs | cache_write=%.3fs | total=%.2fs | status=%s",
-                idx + 1, total, Path(path).name, elapsed, phash_elapsed, cache_write_elapsed, total_elapsed,
-                record.status.value.upper(),
-            )
+            analysis = record.analysis
+            if analysis is not None and analysis.reject_reason != RejectReason.LLM_ERROR.value:
+                analysis.user_request_score = 1.0
+                analysis.visual_tags.pop("user_request_score", None)
+                if custom_prompt and analysis.has_person:
+                    request_score = self._cache.get_request_score(file_hash, model_name, custom_prompt)
+                    if request_score is None:
+                        score_started = time.perf_counter()
+                        try:
+                            request_score = self._engine.score_image_request(
+                                path,
+                                custom_prompt,
+                                max_tokens=96,
+                                image_max_dimension=image_size,
+                            )
+                            self._cache.put_request_score(
+                                file_hash, model_name, custom_prompt, request_score
+                            )
+                            self._cache.flush()
+                            logger.info(
+                                "[analyzer] PROMPT SCORE STORED | image=%s | score=%.3f | elapsed=%.2fs",
+                                Path(path).name, request_score, time.perf_counter() - score_started,
+                            )
+                        except Exception as exc:
+                            request_score = 0.5
+                            logger.warning(
+                                "[analyzer] PROMPT SCORE FAILED | image=%s | neutral_score=0.5 | error=%s",
+                                Path(path).name, exc,
+                            )
+                    else:
+                        logger.info(
+                            "[analyzer] PROMPT SCORE CACHE HIT | image=%s | score=%.3f",
+                            Path(path).name, request_score,
+                        )
+                    analysis.user_request_score = request_score
+
+            if not record.phash:
+                record.phash = compute_phash(path)
 
             results.append(record)
             self._emit_progress(idx + 1, total, record)

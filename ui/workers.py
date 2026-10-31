@@ -1,12 +1,14 @@
 """Background workers for AI Mosaic Builder."""
 from __future__ import annotations
 
+import hashlib
 import logging
+from pathlib import Path
 from typing import Callable
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 
-from engine.cache import AnalysisCache
+from engine.cache import AnalysisCache, compute_file_hash
 from engine.image_analyzer import AnalysisPipeline
 from engine.layout_optimizer import apply_layout_selection, optimize_auto_layout, optimize_fixed_layout
 from engine.models import AppSettings, ImageRecord, ImageStatus
@@ -122,6 +124,17 @@ class PostProcessWorker(QRunnable):
                 detector_error = str(exc)
                 logger.error("[post] person detector initialization failed: %s", exc, exc_info=True)
 
+            detector_identity = str(getattr(detector, "name", detector_model))
+            detector_path = Path(str(detector_model)).expanduser()
+            try:
+                detector_stat = detector_path.stat()
+                detector_identity += f"|{detector_path.resolve()}|{detector_stat.st_size}|{detector_stat.st_mtime_ns}"
+            except OSError:
+                detector_identity += f"|{detector_path}"
+            detector_identity += f"|confidence={detector_conf:.5f}"
+
+            reused_detections = 0
+            recomputed_detections = 0
             for index, record in enumerate(self._records, start=1):
                 if self._cancelled:
                     break
@@ -129,16 +142,38 @@ class PostProcessWorker(QRunnable):
                     if detector is None:
                         record.error_message = detector_error or "No person detector available."
                     else:
-                        record.detections = detect_persons(
-                            record.path,
-                            record.analysis,
-                            backend=detector,
-                            model_path=detector_model,
-                            confidence=detector_conf,
+                        if not record.file_hash:
+                            try:
+                                record.file_hash = compute_file_hash(record.path)
+                            except OSError:
+                                record.file_hash = ""
+                        signature_payload = (
+                            f"{record.file_hash}|{record.analysis.model_used}|"
+                            f"{record.analysis.analysis_version}|{detector_identity}|person-boxes-v1"
                         )
-                        if not record.detections:
-                            record.error_message = "No real person bounding box detected."
+                        signature = hashlib.sha256(signature_payload.encode("utf-8")).hexdigest()[:24]
+                        if record.file_hash and record.detection_signature == signature:
+                            reused_detections += 1
+                        else:
+                            record.detections = detect_persons(
+                                record.path,
+                                record.analysis,
+                                backend=detector,
+                                model_path=detector_model,
+                                confidence=detector_conf,
+                            )
+                            record.detection_signature = signature if record.file_hash else ""
+                            recomputed_detections += 1
+                            if not record.detections:
+                                record.error_message = "No real person bounding box detected."
+                            elif record.error_message == "No real person bounding box detected.":
+                                record.error_message = ""
                 self.signals.progress.emit(index, total, record.filename)
+
+            logger.info(
+                "[post] detections reused=%d recomputed=%d",
+                reused_detections, recomputed_detections,
+            )
 
             custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "").strip()
             custom_weight = max(

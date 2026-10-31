@@ -19,6 +19,12 @@ class _CacheBypass:
     def put(self, *args, **kwargs):
         return self._cache.put(*args, **kwargs)
 
+    def get_request_score(self, *_args, **_kwargs):
+        return None
+
+    def put_request_score(self, *args, **kwargs):
+        return self._cache.put_request_score(*args, **kwargs)
+
     def flush(self):
         return self._cache.flush()
 

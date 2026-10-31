@@ -137,6 +137,7 @@ class MainWindow(QMainWindow):
         for record in self._records:
             if clear_detections:
                 record.detections = []
+                record.detection_signature = ""
             record.ranking = None
             record.selection = None
             if record.analysis:
@@ -169,8 +170,12 @@ class MainWindow(QMainWindow):
             self._cache = self._get_cache_for_source(settings.last_source_folder)
 
         if prompt_changed:
+            prompt = self._normalized_prompt(settings)
+            for record in self._records:
+                if record.analysis is not None:
+                    record.analysis.user_request_score = 0.5 if prompt else 1.0
             self._invalidate_analysis_state(
-                "Custom Prompt changed — run Analyze to apply the new request.",
+                "Custom Prompt changed — run Analyze to evaluate the new request.",
                 clear_detections=False,
             )
         elif detector_changed:
@@ -234,8 +239,8 @@ class MainWindow(QMainWindow):
             return
 
         model_name = Path(self._settings.model_path).name if self._settings.model_path else ""
-        custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "")
-        cache_model = cache_model_key(model_name, custom_prompt) if model_name else ""
+        custom_prompt = self._normalized_prompt(self._settings)
+        cache_model = cache_model_key(model_name) if model_name else ""
 
         session_by_path: dict[str, ImageRecord] = {}
         try:
@@ -251,6 +256,7 @@ class MainWindow(QMainWindow):
         records: list[ImageRecord] = []
         cache_hits = 0
         session_hits = 0
+        prompt_scores_ready = True
         for path in self._paths:
             p = Path(path)
             normalized = str(p.expanduser().resolve())
@@ -270,6 +276,18 @@ class MainWindow(QMainWindow):
                     restored.filename = p.name
                     restored.file_size = file_size
                     restored.file_hash = current_hash
+                    if restored.analysis is not None:
+                        if custom_prompt and restored.analysis.has_person:
+                            score = self._cache.get_request_score(
+                                current_hash, model_name, custom_prompt
+                            )
+                            if score is None:
+                                prompt_scores_ready = False
+                                restored.analysis.user_request_score = 0.5
+                            else:
+                                restored.analysis.user_request_score = score
+                        else:
+                            restored.analysis.user_request_score = 1.0
                     records.append(restored)
                     session_hits += 1
                     if restored.analysis is not None:
@@ -286,6 +304,8 @@ class MainWindow(QMainWindow):
             if cached is not None:
                 record.analysis = cached
                 record.status = ImageStatus.CACHED
+                if custom_prompt and cached.has_person:
+                    prompt_scores_ready = False
                 cache_hits += 1
             records.append(record)
 
@@ -294,19 +314,24 @@ class MainWindow(QMainWindow):
         self.details.clear()
         self.settings_panel.set_analyzing(False)
 
-        # A saved session already contains person detections/ranking/manual
-        # choices. Re-rank those restored records against the current settings
-        # without invoking the vision model.
-        if session_hits:
+        if session_hits and prompt_scores_ready:
             self._rerank_without_detection()
+        elif session_hits:
+            for record in self._records:
+                record.ranking = None
+                record.selection = None
+                if record.analysis is not None:
+                    record.status = ImageStatus.ANALYZED
 
         ready_candidates = bool(self._layout_candidates())
-        self.settings_panel.set_generate_enabled(ready_candidates)
-        ready_selected = bool(self._selected_records())
+        self.settings_panel.set_generate_enabled(ready_candidates and prompt_scores_ready)
+        ready_selected = bool(self._selected_records()) and prompt_scores_ready
         self.settings_panel.set_preview_enabled(ready_selected)
         self.settings_panel.set_export_mosaic_enabled(ready_selected)
-        prompt_state = "custom request" if custom_prompt.strip() else "standard analysis"
-        if ready_candidates:
+        prompt_state = "custom request" if custom_prompt else "standard analysis"
+        if custom_prompt and not prompt_scores_ready:
+            state_text = "Cached visual analysis loaded — run Analyze to evaluate this prompt"
+        elif ready_candidates:
             state_text = "Ready to Generate"
         elif cache_hits == len(records):
             state_text = "Cached analysis loaded — run Analyze only if post-processing is missing"
@@ -366,7 +391,7 @@ class MainWindow(QMainWindow):
         }
         model_name = Path(self._settings.model_path).name if self._settings.model_path else ""
         custom_prompt = str(getattr(self._settings, "custom_prompt", "") or "")
-        cache_model = cache_model_key(model_name, custom_prompt) if model_name else ""
+        cache_model = cache_model_key(model_name) if model_name else ""
 
         refreshed: list[ImageRecord] = []
         cache_hits = 0
@@ -450,11 +475,50 @@ class MainWindow(QMainWindow):
         self.settings_panel.set_preview_enabled(False)
         self.settings_panel.set_export_mosaic_enabled(False)
 
-        # When every image already has cached analysis, no model load is needed.
-        # Post-processing (person detection + ranking) is enough to rebuild
-        # candidates from cache/session state.
-        if self._records and all(record.analysis is not None for record in self._records):
-            self._summary.setText("Using cached analysis — detecting people and ranking…")
+        # Reuse restored analysis without loading the model only when every
+        # current-prompt score is already cached. A new prompt goes through
+        # AnalysisPipeline, which hits the base cache and evaluates only that prompt.
+        all_visual_analysis_ready = bool(self._records) and all(
+            record.analysis is not None
+            and bool(record.file_hash)
+            and record.analysis.model_used == model.name
+            for record in self._records
+        )
+        request_scores_ready = True
+        custom_prompt = self._normalized_prompt(self._settings)
+        model_name = model.name
+        if all_visual_analysis_ready:
+            for record in self._records:
+                try:
+                    current_hash = compute_file_hash(record.path)
+                except OSError:
+                    all_visual_analysis_ready = False
+                    request_scores_ready = False
+                    break
+                if current_hash != record.file_hash:
+                    record.file_hash = current_hash
+                    record.analysis = None
+                    record.detections = []
+                    record.detection_signature = ""
+                    record.ranking = None
+                    record.selection = None
+                    record.status = ImageStatus.PENDING
+                    all_visual_analysis_ready = False
+                    request_scores_ready = False
+                    break
+                if custom_prompt and record.analysis.has_person:
+                    score = self._cache.get_request_score(
+                        current_hash, model_name, custom_prompt
+                    )
+                    if score is None:
+                        request_scores_ready = False
+                        break
+                    record.analysis.user_request_score = score
+                else:
+                    record.analysis.user_request_score = 1.0
+
+        if all_visual_analysis_ready and request_scores_ready:
+            self._summary.setText("Using cached visual analysis and prompt scores — refreshing ranking…")
             worker = PostProcessWorker(self._records, self._settings)
             worker.signals.progress.connect(
                 lambda done, total, name: self._summary.setText(f"Detecting people {done}/{total} — {name}")

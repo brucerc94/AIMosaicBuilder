@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 from datetime import datetime
 from pathlib import Path
@@ -48,20 +49,89 @@ def _is_compatible_entry_version(value: object) -> bool:
     return value == _CACHE_VERSION or value in _LEGACY_CACHE_VERSIONS
 
 
-def _cache_request_key(model_identifier: str) -> str:
-    """Return the custom-request digest used for cache compatibility.
+def _cache_model_name(model_identifier: str) -> str:
+    """Extract the vision model identity from current or legacy cache keys."""
+    return str(model_identifier or "").split("|request:", 1)[0]
 
-    Model identity and preprocessing details are intentionally ignored here.
-    A vision resize changes performance/input representation, not the meaning
-    of an already completed semantic analysis, so cached results remain
-    reusable across AI detection image sizes.
-    """
-    marker = "|request:"
-    text = str(model_identifier or "")
-    if marker not in text:
-        return ""
-    request_part = text.split(marker, 1)[1]
-    return request_part.split("|", 1)[0]
+
+class RequestScoreCache:
+    """Persist custom-prompt evaluations separately from reusable image analysis."""
+
+    _FILENAME = "request_scores.json"
+
+    def __init__(self, cache_dir: str | Path) -> None:
+        self._cache_path = Path(cache_dir) / self._FILENAME
+        self._data: dict[str, dict] = {}
+        self._dirty = False
+        self._load()
+
+    @staticmethod
+    def _key(file_hash: str, model: str, prompt: str) -> tuple[str, str]:
+        normalized_prompt = str(prompt or "").strip()[:2000]
+        prompt_hash = hashlib.sha256(normalized_prompt.encode("utf-8")).hexdigest()
+        identity = f"{file_hash}|{model}|{prompt_hash}|request-score-v1"
+        return hashlib.sha256(identity.encode("utf-8")).hexdigest(), prompt_hash
+
+    def get(self, file_hash: str, model: str, prompt: str) -> Optional[float]:
+        if not str(prompt or "").strip():
+            return None
+        key, prompt_hash = self._key(file_hash, model, prompt)
+        entry = self._data.get(key)
+        if not isinstance(entry, dict):
+            return None
+        if entry.get("prompt_hash") != prompt_hash or entry.get("model") != model:
+            return None
+        try:
+            score = float(entry.get("score"))
+        except (TypeError, ValueError):
+            return None
+        return score if math.isfinite(score) and 0.0 <= score <= 1.0 else None
+
+    def put(self, file_hash: str, model: str, prompt: str, score: float) -> None:
+        if not str(prompt or "").strip():
+            return
+        value = float(score)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("request score must be a finite number between 0 and 1")
+        key, prompt_hash = self._key(file_hash, model, prompt)
+        self._data[key] = {
+            "file_hash": file_hash,
+            "model": model,
+            "prompt_hash": prompt_hash,
+            "score": value,
+            "timestamp": datetime.now().isoformat(),
+        }
+        self._dirty = True
+
+    def flush(self) -> None:
+        if not self._dirty:
+            return
+        try:
+            self._cache_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._cache_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(self._data, indent=2, ensure_ascii=False), encoding="utf-8")
+            tmp.replace(self._cache_path)
+            self._dirty = False
+            logger.info("[cache] Flushed %d prompt scores to %s", len(self._data), self._cache_path)
+        except Exception as exc:
+            logger.error("[cache] Failed to flush prompt scores: %s", exc)
+
+    def clear(self) -> None:
+        self._data.clear()
+        self._dirty = True
+        self.flush()
+
+    def _load(self) -> None:
+        if not self._cache_path.exists():
+            return
+        try:
+            parsed = json.loads(self._cache_path.read_text(encoding="utf-8"))
+            if not isinstance(parsed, dict):
+                raise ValueError("prompt score cache root must be an object")
+            self._data = parsed
+        except Exception as exc:
+            logger.warning("[cache] Could not load prompt score cache %s: %s", self._cache_path, exc)
+            self._data = {}
 
 
 
@@ -81,6 +151,7 @@ class AnalysisCache:
         self._data: dict[str, dict] = {}
         self._dirty = False
         self._load()
+        self._request_score_cache = RequestScoreCache(self.cache_dir)
 
     @property
     def cache_path(self) -> Path:
@@ -104,21 +175,24 @@ class AnalysisCache:
             return None
 
         cached_model = str(entry.get("model", "") or "")
-        if model and _cache_request_key(cached_model) != _cache_request_key(model):
+        cached_model_name = _cache_model_name(cached_model)
+        requested_model_name = _cache_model_name(model)
+        if model and cached_model_name and cached_model_name != requested_model_name:
             logger.debug(
-                f"[cache] MISS (custom request changed) {file_hash[:12]}… "
-                f"cached_request={_cache_request_key(cached_model) or 'default'} "
-                f"requested_request={_cache_request_key(model) or 'default'}"
+                "[cache] MISS (vision model changed) %s… cached=%s requested=%s",
+                file_hash[:12], cached_model_name, requested_model_name,
             )
             return None
-        if model and cached_model and cached_model != model:
+        if cached_model and cached_model != model:
             logger.debug(
-                f"[cache] HIT (model changed, analysis reused) {file_hash[:12]}… "
-                f"cached_model={cached_model} requested_model={model}"
+                "[cache] HIT (legacy prompt-scoped analysis reused) %s… cached_key=%s requested_model=%s",
+                file_hash[:12], cached_model, model,
             )
 
         try:
             analysis = ImageAnalysis.from_dict(entry["analysis_result"])
+            analysis.user_request_score = 1.0
+            analysis.visual_tags.pop("user_request_score", None)
             if analysis.analysis_version != _CACHE_VERSION:
                 logger.debug(
                     f"[cache] MISS (analysis schema changed) {file_hash[:12]}… "
@@ -153,7 +227,9 @@ class AnalysisCache:
             if not _is_compatible_entry_version(entry.get("analysis_version")):
                 continue
             cached_model = str(entry.get("model", "") or "")
-            if model and _cache_request_key(cached_model) != _cache_request_key(model):
+            cached_model_name = _cache_model_name(cached_model)
+            requested_model_name = _cache_model_name(model)
+            if model and cached_model_name and cached_model_name != requested_model_name:
                 continue
             cached_path = entry.get("path", "")
             if not cached_path:
@@ -162,6 +238,8 @@ class AnalysisCache:
                 if Path(cached_path).expanduser().resolve() != requested:
                     continue
                 analysis = ImageAnalysis.from_dict(entry["analysis_result"])
+                analysis.user_request_score = 1.0
+                analysis.visual_tags.pop("user_request_score", None)
                 if analysis.analysis_version != _CACHE_VERSION:
                     continue
                 if not _is_reusable_analysis(analysis):
@@ -203,6 +281,12 @@ class AnalysisCache:
         self._dirty = True
         logger.debug(f"[cache] STORE {file_hash[:12]}… path={path}")
 
+    def get_request_score(self, file_hash: str, model: str, prompt: str) -> Optional[float]:
+        return self._request_score_cache.get(file_hash, model, prompt)
+
+    def put_request_score(self, file_hash: str, model: str, prompt: str, score: float) -> None:
+        self._request_score_cache.put(file_hash, model, prompt, score)
+
     def has(self, file_hash: str) -> bool:
         entry = self._data.get(file_hash)
         return bool(entry and _is_compatible_entry_version(entry.get("analysis_version")))
@@ -212,6 +296,7 @@ class AnalysisCache:
 
     def flush(self) -> None:
         if not self._dirty:
+            self._request_score_cache.flush()
             return
         try:
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -227,10 +312,12 @@ class AnalysisCache:
             )
         except Exception as exc:
             logger.error(f"[cache] Failed to flush: {exc}")
+        self._request_score_cache.flush()
 
     def clear(self) -> None:
         self._data.clear()
         self._dirty = True
+        self._request_score_cache.clear()
         self.flush()
 
     def _load(self) -> None:

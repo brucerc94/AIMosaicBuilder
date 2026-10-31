@@ -358,6 +358,7 @@ class ImageRecord:
     error_message: str = ""
     manually_included: bool = False
     manually_excluded: bool = False
+    detection_signature: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -377,6 +378,7 @@ class ImageRecord:
             "error_message": self.error_message,
             "manually_included": self.manually_included,
             "manually_excluded": self.manually_excluded,
+            "detection_signature": self.detection_signature,
         }
 
     @classmethod
@@ -401,6 +403,7 @@ class ImageRecord:
             error_message=str(d.get("error_message", "")),
             manually_included=bool(d.get("manually_included", False)),
             manually_excluded=bool(d.get("manually_excluded", False)),
+            detection_signature=str(d.get("detection_signature", "")),
         )
 
 

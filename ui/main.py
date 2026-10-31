@@ -300,11 +300,11 @@ class MainWindow(QMainWindow):
                 file_size=file_size,
                 status=ImageStatus.PENDING,
             )
-            cached = self._cache.get_by_path(str(p), model=cache_model)
-            if cached is not None:
-                record.analysis = cached
+            cached_entry = self._cache.get_entry_by_path(str(p), model=cache_model)
+            if cached_entry is not None:
+                record.file_hash, record.analysis = cached_entry
                 record.status = ImageStatus.CACHED
-                if custom_prompt and cached.has_person:
+                if custom_prompt and record.analysis.has_person:
                     prompt_scores_ready = False
                 cache_hits += 1
             records.append(record)
@@ -411,9 +411,9 @@ class MainWindow(QMainWindow):
                 file_size=p.stat().st_size if p.exists() else 0,
                 status=ImageStatus.PENDING,
             )
-            cached = self._cache.get_by_path(str(p), model=cache_model)
-            if cached is not None:
-                record.analysis = cached
+            cached_entry = self._cache.get_entry_by_path(str(p), model=cache_model)
+            if cached_entry is not None:
+                record.file_hash, record.analysis = cached_entry
                 record.status = ImageStatus.CACHED
                 cache_hits += 1
             refreshed.append(record)
